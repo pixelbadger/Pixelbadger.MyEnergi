@@ -76,22 +76,19 @@ def job_nightly_decision() -> dict:
     logger.info("nightly_decision: starting")
     result: dict = {}
     try:
-        missing = _check_panel_config()
+        missing = _check_solcast_config()
         if missing:
-            logger.error("nightly_decision: missing panel config: %s", missing)
-            return {"error": f"Missing panel config: {missing}"}
+            logger.error("nightly_decision: missing Solcast config: %s", missing)
+            return {"error": f"Missing Solcast config: {missing}"}
 
-        lat = os.environ["LAT"]
-        lon = os.environ["LON"]
-        kwp = os.environ["PANEL_KWP"]
-        tilt = os.environ["PANEL_TILT"]
-        azimuth = os.environ["PANEL_AZIMUTH"]
+        resource_id = os.environ["SOLCAST_RESOURCE_ID"]
+        solcast_api_key = os.environ["SOLCAST_API_KEY"]
 
         session = client.make_session(HUB_SERIAL, API_KEY)
         base_url = client.discover_hub_url(session)
         soc = client.get_libbi_soc(session, base_url, LIBBI_SERIAL)
 
-        forecast_data = client.fetch_solar_forecast(lat, lon, tilt, azimuth, kwp)
+        forecast_data = client.fetch_solar_forecast(resource_id, solcast_api_key)
         forecast_kwh = client.get_tomorrow_forecast_kwh(forecast_data)
         if forecast_kwh is None:
             logger.error("nightly_decision: no forecast data for tomorrow")
@@ -140,9 +137,8 @@ def job_nightly_decision() -> dict:
     return result
 
 
-def _check_panel_config() -> list[str]:
-    keys = ["LAT", "LON", "PANEL_KWP", "PANEL_TILT", "PANEL_AZIMUTH"]
-    return [k for k in keys if not os.environ.get(k, "").strip()]
+def _check_solcast_config() -> list[str]:
+    return [k for k in ("SOLCAST_RESOURCE_ID", "SOLCAST_API_KEY") if not os.environ.get(k, "").strip()]
 
 
 def _pick_libbi_serial(conn) -> str:

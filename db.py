@@ -8,6 +8,7 @@ analyse.py) manage their own connections directly.
 
 import os
 import sqlite3
+from datetime import date
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "data.db"))
 
@@ -140,6 +141,32 @@ def get_preferred_device(conn: sqlite3.Connection) -> tuple[str, str] | None:
     if row:
         return row["device_type"], row["serial"]
     return None
+
+
+def get_historical_gen_avg_kwh(
+    conn: sqlite3.Connection, serial: str, for_date: date, window_days: int = 14
+) -> float | None:
+    """Average daily solar generation for the same time of year across all historical years.
+
+    Queries days within ±window_days of for_date's day-of-year, excluding for_date itself.
+    """
+    target_doy = int(for_date.strftime("%j"))
+    row = conn.execute(
+        """
+        SELECT AVG(daily_gen) FROM (
+            SELECT date, SUM(gen_kwh) AS daily_gen
+            FROM   hourly_energy
+            WHERE  device_type = 'L'
+              AND  serial      = :serial
+              AND  date        < :for_date
+              AND  ABS(CAST(strftime('%j', date) AS INTEGER) - :doy) <= :window
+            GROUP  BY date
+            HAVING COUNT(*) >= 6
+        )
+        """,
+        {"serial": serial, "for_date": for_date.isoformat(), "doy": target_doy, "window": window_days},
+    ).fetchone()
+    return row[0] if row else None
 
 
 def get_avg_daily_load_kwh(

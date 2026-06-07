@@ -6,7 +6,7 @@ Home energy management for a Libbi battery + solar + Octopus Flux setup.
 
 - **Libbi battery** serial: `24039839`
 - **Tariff**: Octopus Flux — off-peak 02:00–05:00 (~18p import), standard 05:00–16:00/19:00–02:00 (~29p), peak 16:00–19:00 (~36p import/export)
-- Solar panels configured in `.env` (LAT, LON, PANEL_KWP, PANEL_TILT, PANEL_AZIMUTH)
+- Solar panels: site registered on Solcast; `SOLCAST_RESOURCE_ID` + `SOLCAST_API_KEY` in `.env`
 
 ## File Overview
 
@@ -52,6 +52,8 @@ MYENERGI_HUB_SERIAL=<hub serial, starts with 10...>
 MYENERGI_API_KEY=<from myaccount.myenergi.com>
 MYENERGI_LIBBI_SERIAL=24039839
 LIBBI_CAPACITY_KWH=10.0
+SOLCAST_RESOURCE_ID=<site UUID from solcast.com/rooftop-solar/dashboard>
+SOLCAST_API_KEY=<API key from Solcast account>
 SERVICE_PORT=5000
 DRY_RUN=true          # flip to false once Libbi control endpoint is confirmed
 SYNC_INTERVAL_HOURS=4

@@ -19,6 +19,7 @@ import sqlite3
 import sys
 from datetime import date, timedelta
 
+import db as _db
 from myenergi_client import (
     load_env,
     make_session,
@@ -36,9 +37,6 @@ LIBBI_SERIAL = os.environ.get("MYENERGI_LIBBI_SERIAL", "").strip()
 LIBBI_CAP = float(os.environ.get("LIBBI_CAPACITY_KWH", "10.0"))
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 
-PANEL_CONFIG_KEYS = ["LAT", "LON", "PANEL_KWP", "PANEL_TILT", "PANEL_AZIMUTH"]
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Solar forecast charging recommendation")
     p.add_argument(
@@ -50,13 +48,8 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def check_panel_config() -> list[str]:
-    missing = []
-    for key in PANEL_CONFIG_KEYS:
-        val = os.environ.get(key, "").strip()
-        if not val:
-            missing.append(key)
-    return missing
+def check_solcast_config() -> list[str]:
+    return [k for k in ("SOLCAST_RESOURCE_ID", "SOLCAST_API_KEY") if not os.environ.get(k, "").strip()]
 
 
 def get_avg_daily_load_kwh(libbi_serial: str, days: int) -> float | None:
@@ -88,25 +81,19 @@ def get_avg_daily_load_kwh(libbi_serial: str, days: int) -> float | None:
 def main():
     args = parse_args()
 
-    missing = check_panel_config()
+    missing = check_solcast_config()
     if missing:
-        print("Missing panel config in .env. Add the following keys:")
+        print("Missing Solcast config in .env. Add:")
         hints = {
-            "LAT": "51.5074       # decimal latitude (positive = North)",
-            "LON": "-0.1278       # decimal longitude (negative = West)",
-            "PANEL_KWP": "4.0    # total panel peak power in kilowatts",
-            "PANEL_TILT": "35    # tilt from horizontal (0=flat, 90=vertical)",
-            "PANEL_AZIMUTH": "0  # 0=South, -90=East, 90=West, 180=North",
+            "SOLCAST_RESOURCE_ID": "<site UUID from solcast.com/rooftop-solar/dashboard>",
+            "SOLCAST_API_KEY": "<API key from your Solcast account>",
         }
         for key in missing:
             print(f"  {key}={hints[key]}")
         sys.exit(1)
 
-    lat = os.environ["LAT"]
-    lon = os.environ["LON"]
-    kwp = os.environ["PANEL_KWP"]
-    tilt = os.environ["PANEL_TILT"]
-    azimuth = os.environ["PANEL_AZIMUTH"]
+    resource_id = os.environ["SOLCAST_RESOURCE_ID"]
+    api_key = os.environ["SOLCAST_API_KEY"]
 
     session = make_session(HUB_SERIAL, API_KEY)
 
@@ -120,7 +107,7 @@ def main():
 
     print("Fetching solar forecast…")
     try:
-        forecast_data = fetch_solar_forecast(lat, lon, tilt, azimuth, kwp)
+        forecast_data = fetch_solar_forecast(resource_id, api_key)
         forecast_kwh = get_tomorrow_forecast_kwh(forecast_data)
     except Exception as e:
         print(f"Error fetching solar forecast: {e}")
@@ -129,12 +116,20 @@ def main():
     if forecast_kwh is None:
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
         print(
-            f"Warning: Forecast.Solar returned no estimate for {tomorrow}. "
-            "Check that LAT/LON/PANEL_KWP are correct."
+            f"Warning: Solcast returned no periods for {tomorrow}. "
+            "Check SOLCAST_RESOURCE_ID is correct and the site covers tomorrow."
         )
         sys.exit(1)
 
     daily_load = get_avg_daily_load_kwh(LIBBI_SERIAL, args.days)
+
+    tomorrow_date = date.today() + timedelta(days=1)
+    if os.path.exists(DB_PATH):
+        _conn = _db.get_conn()
+        historical_gen = _db.get_historical_gen_avg_kwh(_conn, LIBBI_SERIAL, tomorrow_date)
+        _conn.close()
+    else:
+        historical_gen = None
 
     battery_stored = LIBBI_CAP * (soc / 100.0)
     battery_deficit = LIBBI_CAP - battery_stored
@@ -149,16 +144,21 @@ def main():
         needed_label = f"{solar_needed:.1f} kWh  (battery deficit only — no load history)"
 
     surplus = forecast_kwh - solar_needed
-    tomorrow_str = (date.today() + timedelta(days=1)).isoformat()
+
+    if historical_gen is not None:
+        hist_label = f"{historical_gen:.1f} kWh  (±14-day avg, same time of year)"
+    else:
+        hist_label = "N/A — run fetch_history.py first"
 
     print()
     print("=== Tomorrow's Charge Recommendation ===")
-    print(f"{'Date:':<22} {tomorrow_str}")
+    print(f"{'Date:':<22} {tomorrow_date.isoformat()}")
     print(
         f"{'Current battery SOC:':<22} {soc:.0f}%  "
         f"({battery_stored:.1f} kWh stored, {battery_deficit:.1f} kWh deficit)"
     )
-    print(f"{'Forecast solar:':<22} {forecast_kwh:.1f} kWh")
+    print(f"{'Solcast forecast:':<22} {forecast_kwh:.1f} kWh")
+    print(f"{'Historical avg gen:':<22} {hist_label}")
     print(f"{'Daily avg load:':<22} {load_label}")
     print(f"{'Solar needed:':<22} {needed_label}")
     if surplus >= 0:
