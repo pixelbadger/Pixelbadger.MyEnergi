@@ -19,21 +19,16 @@ import sqlite3
 import sys
 from datetime import date, timedelta
 
-import requests
-from requests.auth import HTTPDigestAuth
+from myenergi_client import (
+    load_env,
+    make_session,
+    discover_hub_url,
+    get_libbi_soc,
+    fetch_solar_forecast,
+    get_tomorrow_forecast_kwh,
+)
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    if os.path.exists(env_path):
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    os.environ.setdefault(k.strip(), v.strip())
+load_env()
 
 HUB_SERIAL = os.environ["MYENERGI_HUB_SERIAL"]
 API_KEY = os.environ["MYENERGI_API_KEY"]
@@ -62,56 +57,6 @@ def check_panel_config() -> list[str]:
         if not val:
             missing.append(key)
     return missing
-
-
-def discover_hub_url(session: requests.Session) -> str:
-    r = session.get(
-        "https://director.myenergi.net/cgi-jstatus-*",
-        headers={"Accept": "application/json"},
-        timeout=15,
-    )
-    r.raise_for_status()
-    data = r.json()
-    asn = data.get("asn") or data[0].get("asn")
-    return f"https://{asn}"
-
-
-def get_libbi_soc(session: requests.Session, base_url: str, libbi_serial: str) -> float:
-    r = session.get(f"{base_url}/cgi-jstatus-*", timeout=15)
-    r.raise_for_status()
-    data = r.json()
-    libbi_list = data.get("libbi", [])
-    if not isinstance(libbi_list, list):
-        libbi_list = [libbi_list]
-    if not libbi_list:
-        raise RuntimeError("No Libbi device found in hub status response")
-    if libbi_serial:
-        for entry in libbi_list:
-            if str(entry.get("sno", "")) == libbi_serial:
-                return float(entry["soc"])
-    return float(libbi_list[0]["soc"])
-
-
-def fetch_solar_forecast(lat: str, lon: str, tilt: str, azimuth: str, kwp: str) -> dict:
-    url = f"https://api.forecast.solar/estimate/{lat}/{lon}/{tilt}/{azimuth}/{kwp}"
-    try:
-        r = requests.get(url, headers={"User-Agent": "myenergi-forecast-script/1.0"}, timeout=15)
-    except requests.RequestException as e:
-        raise RuntimeError(f"Network error calling Forecast.Solar: {e}") from e
-    if r.status_code != 200:
-        raise RuntimeError(
-            f"Forecast.Solar returned HTTP {r.status_code} — check LAT/LON/PANEL_KWP values"
-        )
-    return r.json()
-
-
-def get_tomorrow_forecast_kwh(forecast_data: dict) -> float | None:
-    tomorrow = (date.today() + timedelta(days=1)).isoformat()
-    wh_day = forecast_data.get("result", {}).get("wh_day", {})
-    wh = wh_day.get(tomorrow)
-    if wh is None:
-        return None
-    return wh / 1000.0
 
 
 def get_avg_daily_load_kwh(libbi_serial: str, days: int) -> float | None:
@@ -163,8 +108,7 @@ def main():
     tilt = os.environ["PANEL_TILT"]
     azimuth = os.environ["PANEL_AZIMUTH"]
 
-    session = requests.Session()
-    session.auth = HTTPDigestAuth(HUB_SERIAL, API_KEY)
+    session = make_session(HUB_SERIAL, API_KEY)
 
     print("Connecting to MyEnergi hub…")
     try:
