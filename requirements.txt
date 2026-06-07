@@ -1,0 +1,4 @@
+# On Debian/Ubuntu you can also use:
+#   sudo apt install python3-requests python3-dotenv
+requests>=2.31.0
+python-dotenv>=1.0.0
