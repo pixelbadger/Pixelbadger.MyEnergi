@@ -1,23 +1,18 @@
 """
-Libbi charging control stub.
+Libbi charging control via the myenergi OAuth (Cognito) API.
 
-The MyEnergi API is unofficial and community-reverse-engineered. The control
-endpoint below is the best-known community candidate but should be verified
-before setting DRY_RUN=false.
+charge_from_grid is a cloud-managed setting; the local hub HTTP API cannot
+reliably change it. We authenticate with AWS Cognito and call the myaccount
+endpoint directly — the same path the myenergi app uses.
 
-To confirm the endpoint:
-  - Read pymyenergi source: https://github.com/CJNE/pymyenergi (libbi.py)
-  - Capture myenergi app traffic (HTTPS proxy with cert pinning bypass)
-  - Reference: https://github.com/twonk/MyEnergi-App-Api
-
-Best-known control pattern:
-  GET /cgi-set-lmo-L{serial}-{mode}
-    mode 1 = Normal (mains charging enabled)
-    mode 4 = Stopped (no charging, no discharge)
+Required .env keys:
+  MYENERGI_APP_EMAIL     — myenergi account email
+  MYENERGI_APP_PASSWORD  — myenergi account password
 """
 
 import os
 import requests
+import myenergi_client as client
 
 DRY_RUN = os.environ.get("DRY_RUN", "true").lower() == "true"
 
@@ -31,20 +26,22 @@ def set_libbi_charging(
     """
     Enable or disable Libbi mains battery charging.
 
-    Returns (success, error_message). When DRY_RUN=true (default), logs the
-    intended action without making a network call.
+    Returns (success, error_message).
     """
-    mode = 1 if enable else 4
     action = "enable" if enable else "disable"
 
     if DRY_RUN:
-        print(f"[DRY_RUN] Would set Libbi {serial} mode={mode} ({action} mains charging)")
+        print(f"[DRY_RUN] Would {action} mains charging for Libbi {serial}")
         return True, "dry-run"
 
-    url = f"{base_url}/cgi-set-lmo-L{serial}-{mode}"
+    app_email = os.environ.get("MYENERGI_APP_EMAIL", "")
+    app_password = os.environ.get("MYENERGI_APP_PASSWORD", "")
+    if not app_email or not app_password:
+        return False, "MYENERGI_APP_EMAIL / MYENERGI_APP_PASSWORD not set in .env"
+
     try:
-        r = session.get(url, timeout=15)
-        r.raise_for_status()
+        token = client.get_cognito_token(app_email, app_password)
+        client.set_charge_from_grid(token, serial, enable)
         return True, None
     except Exception as e:
         return False, str(e)

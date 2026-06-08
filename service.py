@@ -19,6 +19,9 @@ from datetime import date, timedelta
 from flask import Flask, abort, jsonify, render_template, request
 
 import myenergi_client as client
+
+client.load_env()
+
 import db
 import scheduler as sched
 
@@ -26,8 +29,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(name)s %(levelname)s %(message)s",
 )
-
-client.load_env()
 
 app = Flask(__name__)
 

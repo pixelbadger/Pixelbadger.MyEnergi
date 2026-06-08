@@ -130,6 +130,56 @@ def parse_record(rec: dict) -> dict:
     }
 
 
+_COGNITO_URL = "https://cognito-idp.eu-west-2.amazonaws.com/"
+_COGNITO_CLIENT_ID = "2fup0dhufn5vurmprjkj599041"
+_MYENERGI_ACCOUNT_URL = "https://myaccount.myenergi.com"
+
+
+def get_cognito_token(email: str, password: str) -> str:
+    """Authenticate with the myenergi Cognito user pool, return an access token."""
+    r = requests.post(
+        _COGNITO_URL,
+        json={
+            "AuthFlow": "USER_PASSWORD_AUTH",
+            "AuthParameters": {"USERNAME": email, "PASSWORD": password},
+            "ClientId": _COGNITO_CLIENT_ID,
+        },
+        headers={
+            "Content-Type": "application/x-amz-json-1.1",
+            "X-Amz-Target": "AWSCognitoIdentityProviderService.InitiateAuth",
+        },
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Cognito auth failed ({r.status_code}): {r.text}")
+    return r.json()["AuthenticationResult"]["AccessToken"]
+
+
+def get_charge_from_grid(access_token: str, libbi_serial: str) -> bool:
+    """Return current charge_from_grid setting for this Libbi."""
+    r = requests.get(
+        f"{_MYENERGI_ACCOUNT_URL}/api/AccountAccess/LibbiMode",
+        params={"serialNo": libbi_serial},
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"get_charge_from_grid failed ({r.status_code}): {r.text}")
+    return r.json()["content"][str(libbi_serial)]
+
+
+def set_charge_from_grid(access_token: str, libbi_serial: str, enable: bool) -> None:
+    """Enable or disable mains battery charging via the myenergi OAuth API."""
+    r = requests.put(
+        f"{_MYENERGI_ACCOUNT_URL}/api/AccountAccess/LibbiMode",
+        params={"chargeFromGrid": str(enable).lower(), "serialNo": libbi_serial},
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"set_charge_from_grid failed ({r.status_code}): {r.text}")
+
+
 def fetch_solar_forecast(resource_id: str, api_key: str) -> dict:
     """Fetch 48-hour PV forecast from Solcast for a registered rooftop site."""
     url = f"https://api.solcast.com.au/rooftop_sites/{resource_id}/forecasts"
