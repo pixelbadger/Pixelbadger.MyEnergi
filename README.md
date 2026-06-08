@@ -64,6 +64,17 @@ SYNC_INTERVAL_HOURS=4
 DRY_RUN=true
 ```
 
+### Setting up OAuth credentials
+
+`MYENERGI_APP_EMAIL` and `MYENERGI_APP_PASSWORD` are your login for the myenergi app / [myaccount.myenergi.com](https://myaccount.myenergi.com) — the same account you used when you first set up the Libbi.
+
+If you don't have an account yet:
+1. Download the myenergi app (iOS / Android) or go to [myaccount.myenergi.com](https://myaccount.myenergi.com)
+2. Register and follow the prompts to claim your hub
+3. Once your Libbi appears in the app, those credentials are ready to use here
+
+These are separate from `MYENERGI_API_KEY`: the API key reads live data directly from the hub over your LAN; the app credentials authenticate with the myenergi cloud to toggle the charge-from-grid setting, which is only controllable via that route.
+
 ## Charge decision logic
 
 Runs nightly at 23:00:

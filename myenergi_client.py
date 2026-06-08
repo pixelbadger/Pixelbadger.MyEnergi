@@ -168,6 +168,12 @@ def get_charge_from_grid(access_token: str, libbi_serial: str) -> bool:
     return r.json()["content"][str(libbi_serial)]
 
 
+def set_libbi_mode(session: requests.Session, base_url: str, serial: str, mode: int) -> None:
+    """Set Libbi operating mode via hub API. mode 1=Normal (charge+discharge), 0=Stopped."""
+    r = session.get(f"{base_url}/cgi-libbi-mode-L{serial}-{mode}", timeout=15)
+    r.raise_for_status()
+
+
 def set_charge_from_grid(access_token: str, libbi_serial: str, enable: bool) -> None:
     """Enable or disable mains battery charging via the myenergi OAuth API."""
     r = requests.put(
@@ -178,6 +184,9 @@ def set_charge_from_grid(access_token: str, libbi_serial: str, enable: bool) -> 
     )
     if r.status_code != 200:
         raise RuntimeError(f"set_charge_from_grid failed ({r.status_code}): {r.text}")
+    actual = get_charge_from_grid(access_token, libbi_serial)
+    if actual != enable:
+        raise RuntimeError(f"chargeFromGrid readback mismatch: set {enable}, got {actual}")
 
 
 def fetch_solar_forecast(resource_id: str, api_key: str) -> dict:

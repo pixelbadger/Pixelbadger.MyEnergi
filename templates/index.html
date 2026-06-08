@@ -53,6 +53,21 @@
     .badge.dryrun { background: #27272a; color: #a1a1aa; }
     .badge.error { background: #450a0a; color: #fca5a5; }
     .no-decisions { color: #475569; font-size: 0.85rem; padding: 1rem 0; }
+
+    .controls-bar { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.75rem 1.25rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .btn { border: none; border-radius: 6px; cursor: pointer; font-size: 0.875rem; padding: 0.4rem 1rem; font-weight: 500; transition: opacity 0.15s; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #2563eb; }
+    .btn-dryrun-on  { background: #27272a; color: #a1a1aa; }
+    .btn-dryrun-off { background: #1e3a5f; color: #93c5fd; }
+    .btn-dryrun-on:hover:not(:disabled)  { background: #3f3f46; }
+    .btn-dryrun-off:hover:not(:disabled) { background: #1e40af; }
+
+    .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.75rem 1.25rem; font-size: 0.85rem; max-width: 340px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 100; }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.ok  { border-color: #22c55e; color: #86efac; }
+    .toast.err { border-color: #ef4444; color: #fca5a5; }
   </style>
 </head>
 <body>
@@ -67,6 +82,15 @@
 </header>
 
 <main>
+  <div class="controls-bar">
+    <button id="btnDecision" class="btn btn-primary" onclick="triggerDecision()">Run Decision Now</button>
+    <button id="btnDryRun" class="btn {{ 'btn-dryrun-on' if dry_run else 'btn-dryrun-off' }}"
+            onclick="toggleDryRun()">
+      Dry Run: {{ 'ON' if dry_run else 'OFF' }}
+    </button>
+    <span style="font-size:0.8rem;color:#475569">Changes take effect immediately (runtime only — restart reloads .env)</span>
+  </div>
+
   <div class="filter-bar">
     <form method="GET" action="/" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;width:100%">
       <label>From <input type="date" name="from" value="{{ from_date }}"></label>
@@ -172,7 +196,69 @@
   </div>
 </main>
 
+<div class="toast" id="toast"></div>
+
 <script>
+const SERVICE_TOKEN = {{ service_token | tojson }};
+
+function authHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (SERVICE_TOKEN) h['X-Auth-Token'] = SERVICE_TOKEN;
+  return h;
+}
+
+let toastTimer;
+function showToast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = 'toast'; }, 4000);
+}
+
+async function triggerDecision() {
+  const btn = document.getElementById('btnDecision');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const r = await fetch('/api/trigger-decision', { method: 'POST', headers: authHeaders() });
+    const d = await r.json();
+    if (!r.ok) { showToast('Error: ' + (d.error || r.status), 'err'); return; }
+    const msg = d.decision
+      ? `Decision: ${d.decision} — ${d.surplus_kwh >= 0 ? '+' : ''}${(d.surplus_kwh||0).toFixed(1)} kWh`
+      : (d.error || JSON.stringify(d));
+    showToast(msg, d.error ? 'err' : 'ok');
+    setTimeout(() => location.reload(), 1500);
+  } catch(e) {
+    showToast('Request failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Run Decision Now';
+  }
+}
+
+async function toggleDryRun() {
+  const btn = document.getElementById('btnDryRun');
+  btn.disabled = true;
+  try {
+    const current = btn.textContent.includes('ON');
+    const r = await fetch('/api/dry-run', {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ enabled: !current }),
+    });
+    const d = await r.json();
+    if (!r.ok) { showToast('Error toggling dry run', 'err'); return; }
+    btn.textContent = 'Dry Run: ' + (d.dry_run ? 'ON' : 'OFF');
+    btn.className = 'btn ' + (d.dry_run ? 'btn-dryrun-on' : 'btn-dryrun-off');
+    showToast('Dry run ' + (d.dry_run ? 'enabled' : 'disabled'), 'ok');
+  } catch(e) {
+    showToast('Request failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 const DAILY = {{ daily_data | tojson }};
 
 {% if daily_data %}

@@ -23,6 +23,7 @@ import myenergi_client as client
 client.load_env()
 
 import db
+import libbi_control
 import scheduler as sched
 
 logging.basicConfig(
@@ -57,6 +58,8 @@ def index():
         daily_data=daily_data,
         decisions=decisions,
         device=device,
+        dry_run=libbi_control.DRY_RUN,
+        service_token=SERVICE_TOKEN,
     )
 
 
@@ -105,7 +108,7 @@ def api_status():
             _soc_cache["data"] = {"soc_pct": None, "error": str(e)}
         _soc_cache["expires"] = now + 60
 
-    return jsonify({**_soc_cache["data"], **sched.get_job_status()})
+    return jsonify({**_soc_cache["data"], **sched.get_job_status(), "dry_run": libbi_control.DRY_RUN})
 
 
 @app.route("/api/trigger-decision", methods=["POST"])
@@ -116,6 +119,17 @@ def api_trigger_decision():
             abort(403)
     result = sched.job_nightly_decision()
     return jsonify(result)
+
+
+@app.route("/api/dry-run", methods=["POST"])
+def api_dry_run():
+    if SERVICE_TOKEN:
+        token = request.headers.get("X-Auth-Token", "")
+        if token != SERVICE_TOKEN:
+            abort(403)
+    data = request.get_json(silent=True) or {}
+    libbi_control.DRY_RUN = bool(data.get("enabled", not libbi_control.DRY_RUN))
+    return jsonify({"dry_run": libbi_control.DRY_RUN})
 
 
 if __name__ == "__main__":
