@@ -18,8 +18,6 @@ Home energy management for a Libbi battery + solar + Octopus Flux setup.
 | `scheduler.py` | Background jobs: sync history (interval) + nightly charge decision (23:00) |
 | `libbi_control.py` | Libbi charging enable/disable — DRY_RUN=true by default |
 | `fetch_history.py` | CLI: full historical backfill → data.db |
-| `forecast_charge.py` | CLI: one-shot solar forecast + charge recommendation |
-| `analyse.py` | CLI: Flux tariff cost analysis on historical data |
 | `templates/index.html` | Web dashboard (Chart.js, no build step) |
 | `data.db` | SQLite store (gitignored) |
 | `.env` | All credentials and config (gitignored) |
@@ -41,8 +39,6 @@ The scheduler fires immediately on startup (history sync), then every `SYNC_INTE
 
 ```bash
 python fetch_history.py          # full historical backfill
-python forecast_charge.py        # tonight's charge recommendation
-python analyse.py                # Flux cost analysis
 ```
 
 ## Key Config (.env)
