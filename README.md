@@ -10,18 +10,28 @@ Each night at 23:00 the service fetches tomorrow's solar forecast, compares it a
 - **Octopus Flux** — off-peak import 02:00–05:00 (~18p), peak export 16:00–19:00 (~36p)
 - Rooftop solar registered on [Solcast](https://solcast.com/rooftop-solar/dashboard)
 
-## Prerequisites
+## Install
 
-Python 3.11+ on Debian/Ubuntu. Install system packages:
+1. **Configure** — copy `.env.example` to `.env` and fill in your credentials (see [Configuration](#configuration) below).
+
+2. **Install & enable** — installs dependencies, writes a systemd user unit, and enables it:
+
+   ```bash
+   bash install.sh
+   ```
+
+3. **Start**:
+
+   ```bash
+   systemctl --user start myenergi
+   ```
+
+Dashboard → [http://localhost:5000](http://localhost:5000)
 
 ```bash
-sudo apt install python3-flask python3-apscheduler python3-dotenv python3-requests
-```
-
-Or with pip:
-
-```bash
-pip install -r requirements.txt
+systemctl --user status myenergi
+journalctl --user -u myenergi -f   # live logs
+systemctl --user stop myenergi
 ```
 
 ## Configuration
@@ -52,31 +62,6 @@ SYNC_INTERVAL_HOURS=4
 
 # Safety switch — flip to false once you've verified the API works for your hub
 DRY_RUN=true
-```
-
-## Running
-
-### Directly
-
-```bash
-python service.py
-```
-
-Dashboard → [http://localhost:5000](http://localhost:5000)
-
-### As a systemd user service (persistent)
-
-```bash
-bash install.sh
-systemctl --user start myenergi
-```
-
-Useful commands:
-
-```bash
-systemctl --user status myenergi
-journalctl --user -u myenergi -f   # live logs
-systemctl --user stop myenergi
 ```
 
 ## Charge decision logic
