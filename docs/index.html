@@ -202,6 +202,51 @@
     .decision-box .op  { color: #c4b5fd; }
     .decision-box .comment { color: #475569; }
 
+    section h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #f1f5f9;
+      margin: 1.75rem 0 0.6rem;
+    }
+
+    section p.body {
+      font-size: 0.9rem;
+      color: #94a3b8;
+      margin-bottom: 1rem;
+      max-width: 72ch;
+    }
+
+    .schedule {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .schedule th {
+      text-align: left;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+      padding: 0.5rem 1rem 0.5rem 0;
+      border-bottom: 1px solid #334155;
+    }
+
+    .schedule td {
+      padding: 0.6rem 1rem 0.6rem 0;
+      border-bottom: 1px solid #1e293b;
+      color: #94a3b8;
+      vertical-align: top;
+    }
+
+    .schedule td.when {
+      white-space: nowrap;
+      font-family: "JetBrains Mono", "Fira Code", monospace;
+      font-size: 0.8rem;
+      color: #93c5fd;
+    }
+
     .reqs {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -237,11 +282,12 @@
 
 <header>
   <h1><img src="avatar.png" alt="PixelBadger" width="52" height="52">MyEnergi Extensions</h1>
-  <p class="tagline">Automated overnight charge management for a Libbi battery on any tariff with a cheap overnight window (defaults for Octopus Flux), with a solar forecast and web dashboard.</p>
+  <p class="tagline">Automated overnight charge management for a Libbi battery on any tariff with a cheap overnight window (defaults for Octopus Flux) — solar forecasting, weather-aware cold-battery pre-warming, and a web dashboard.</p>
   <div class="pills">
     <span class="pill">Libbi</span>
     <span class="pill">Time-of-use tariffs</span>
     <span class="pill">Solcast</span>
+    <span class="pill">Open-Meteo</span>
     <span class="pill">Python</span>
     <span class="pill">Self-hosted</span>
   </div>
@@ -267,19 +313,37 @@
       <p>Enables or disables mains charging each night at 23:00 — charges from grid only when solar won't cover the next day's demand.</p>
     </div>
     <div class="feature">
-      <div class="icon">📊</div>
-      <h3>Web dashboard</h3>
-      <p>Daily kWh summary with charts, recent charge decisions, live SoC, and a one-click manual trigger.</p>
+      <div class="icon">❄️</div>
+      <h3>Cold-battery pre-warm</h3>
+      <p>On cold nights, starts charging a little before the off-peak window so the BMS isn't throttling charge power when the cheap rate begins — lead time chosen by a calibrated thermal model.</p>
     </div>
     <div class="feature">
-      <div class="icon">🔒</div>
-      <h3>Discharge always on</h3>
-      <p>Uses the myenergi OAuth API to toggle <em>charge from grid</em> only — the Libbi stays in Normal mode and keeps discharging to the house.</p>
+      <div class="icon">📊</div>
+      <h3>Web dashboard</h3>
+      <p>Daily kWh summary with charts, recent charge decisions with overnight lows and pre-warm leads, live SoC, and one-click triggers for the decision and pre-warm planner.</p>
     </div>
   </div>
 
   <section>
     <h2>How it works</h2>
+
+    <table class="schedule">
+      <tr><th>When</th><th>Job</th></tr>
+      <tr>
+        <td class="when">23:00</td>
+        <td><strong style="color:#f1f5f9">Nightly charge decision</strong> — Solcast forecast vs. average load + battery deficit → enable or disable mains charging; also fetches the overnight weather forecast and flags a pre-warm if it's cold.</td>
+      </tr>
+      <tr>
+        <td class="when">00:10</td>
+        <td><strong style="color:#f1f5f9">Pre-warm planning</strong> — reads the actual battery cell temperature and SOC, simulates the night's charge minute by minute, and picks the cost-optimal pre-warm lead time.</td>
+      </tr>
+      <tr>
+        <td class="when">off-peak − lead</td>
+        <td><strong style="color:#f1f5f9">Pre-warm enable</strong> — one-shot job that starts charging early so the pack is warm when the cheap window opens.</td>
+      </tr>
+    </table>
+
+    <h3>Nightly charge decision</h3>
     <div class="decision-box">
       <span class="comment"># runs nightly at 23:00</span><br>
       <span class="var">battery_deficit</span> <span class="op">=</span> LIBBI_CAPACITY <span class="op">−</span> (LIBBI_CAPACITY <span class="op">×</span> soc <span class="op">/</span> 100)<br>
@@ -288,6 +352,30 @@
       surplus <span class="op">≥ 0</span>  <span class="op">→</span>  <span class="comment">disable mains charging  (solar covers it)</span><br>
       surplus <span class="op">&lt; 0</span>  <span class="op">→</span>  <span class="comment">enable mains charging   (shortfall of |surplus| kWh)</span>
     </div>
+
+    <h3>Cold-weather pre-warm</h3>
+    <p class="body">
+      The Libbi BMS caps charge power by battery cell temperature — roughly 130&nbsp;W near 0&nbsp;°C
+      against 4.3&nbsp;kW when warm — but its built-in heater warms the pack at about 0.24&nbsp;°C/min
+      while charging. On a cold night a full off-peak window can therefore fail to deliver the
+      planned charge. The planner uses a thermal model calibrated from winter minute-level data to
+      simulate the night's charge at 1-minute resolution and picks the lead time that minimises
+      total cost:
+    </p>
+    <div class="decision-box" style="margin-bottom:1rem">
+      <span class="comment"># runs at 00:10, using the measured cell temp + SOC</span><br>
+      <span class="var">cost</span> <span class="op">=</span> pre-warm kWh <span class="op">×</span> standard rate<br>
+      &nbsp;&nbsp;&nbsp;&nbsp; <span class="op">+</span> window kWh <span class="op">×</span> off-peak rate<br>
+      &nbsp;&nbsp;&nbsp;&nbsp; <span class="op">+</span> shortfall kWh <span class="op">×</span> standard rate<br><br>
+      <span class="op">→</span> enable charging at <span class="var">off-peak start − lead</span>
+    </div>
+    <p class="body">
+      Pre-warm energy isn't wasted — it still charges the battery, just at the standard rate
+      instead of off-peak — so the optimum usually starts only slightly early: around 10&nbsp;min of
+      lead at 1&nbsp;°C, 35&nbsp;min at −5&nbsp;°C, and none at all when it's mild or the battery is
+      already half-full. Overnight temperatures come from Open-Meteo (no API key needed), and each
+      night's planned lead and measured cell temperature are logged for recalibration.
+    </p>
   </section>
 
   <section>
@@ -302,7 +390,7 @@
       <li>
         <div>
           <strong>Enter your credentials when prompted</strong>
-          <p>Hub serial + API key from myaccount.myenergi.com, Solcast resource ID + key, and your myenergi app login for charge control — written to <code style="background:none;border:none;padding:0;color:#93c5fd;font-size:inherit">.env</code> (kept local, never committed).</p>
+          <p>Hub serial + API key from myaccount.myenergi.com, Solcast resource ID + key, your myenergi app login for charge control, and your property's latitude/longitude for the weather forecast — written to <code style="background:none;border:none;padding:0;color:#93c5fd;font-size:inherit">.env</code> (kept local, never committed).</p>
         </div>
       </li>
       <li>
