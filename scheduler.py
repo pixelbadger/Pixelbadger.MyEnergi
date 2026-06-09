@@ -1,9 +1,12 @@
 """
 APScheduler job definitions for the MyEnergi service.
 
-Two recurring jobs:
+Three recurring jobs:
   sync_history     — fetches the last 7 days of hourly data from the hub
   nightly_decision — runs at 23:00 to decide whether to enable overnight charging
+  prewarm_plan     — runs at 00:10 to pick a cost-optimal pre-warm start time
+                     from the actual battery cell temperature, then schedules a
+                     one-shot charge-enable before the 02:00 off-peak window
 """
 
 import logging
@@ -18,17 +21,26 @@ from apscheduler.triggers.interval import IntervalTrigger
 import db
 import libbi_control
 import myenergi_client as client
+import prewarm_model
+import weather_client
 
 logger = logging.getLogger(__name__)
 
-SYNC_INTERVAL_HOURS = int(os.environ.get("SYNC_INTERVAL_HOURS", "4"))
-HUB_SERIAL = os.environ.get("MYENERGI_HUB_SERIAL", "")
-API_KEY = os.environ.get("MYENERGI_API_KEY", "")
-LIBBI_SERIAL = os.environ.get("MYENERGI_LIBBI_SERIAL", "").strip()
-LIBBI_CAP = float(os.environ.get("LIBBI_CAPACITY_KWH", "10.0"))
+SYNC_INTERVAL_HOURS      = int(os.environ.get("SYNC_INTERVAL_HOURS", "4"))
+HUB_SERIAL               = os.environ.get("MYENERGI_HUB_SERIAL", "")
+API_KEY                  = os.environ.get("MYENERGI_API_KEY", "")
+LIBBI_SERIAL             = os.environ.get("MYENERGI_LIBBI_SERIAL", "").strip()
+LIBBI_CAP                = float(os.environ.get("LIBBI_CAPACITY_KWH", "10.0"))
+WEATHER_LAT              = os.environ.get("WEATHER_LAT", "").strip()
+WEATHER_LON              = os.environ.get("WEATHER_LON", "").strip()
+PREWARM_THRESHOLD_C      = float(os.environ.get("PREWARM_THRESHOLD_C", "2.0"))
+PREWARM_LEAD_MINUTES     = int(os.environ.get("PREWARM_LEAD_MINUTES", "120"))
+OFFPEAK_START_HOUR       = 2  # Octopus Flux off-peak starts 02:00
 
 _last_sync: datetime | None = None
 _last_decision: datetime | None = None
+_last_prewarm: datetime | None = None
+_scheduler: BackgroundScheduler | None = None
 
 
 def job_sync_history(days_back: int = 7) -> None:
@@ -109,6 +121,28 @@ def job_nightly_decision() -> dict:
         )
 
         tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+        # Fetch weather forecast and assess pre-warm need
+        overnight_min_temp = None
+        prewarm_scheduled = 0
+        if WEATHER_LAT and WEATHER_LON:
+            try:
+                wx_rows = weather_client.fetch_forecast_hourly(
+                    float(WEATHER_LAT), float(WEATHER_LON)
+                )
+                db.insert_weather_rows(conn, wx_rows)
+                overnight_min_temp = db.get_overnight_min_temp(conn, tomorrow)
+                if (overnight_min_temp is not None
+                        and overnight_min_temp < PREWARM_THRESHOLD_C
+                        and decision == "enable"):
+                    prewarm_scheduled = 1
+                    logger.info(
+                        "nightly_decision: overnight min %.1f°C < %.1f°C — pre-warm scheduled",
+                        overnight_min_temp, PREWARM_THRESHOLD_C,
+                    )
+            except Exception:
+                logger.warning("nightly_decision: weather fetch failed", exc_info=True)
+
         record = {
             "decided_at": datetime.now(timezone.utc).isoformat(),
             "for_date": tomorrow,
@@ -122,6 +156,8 @@ def job_nightly_decision() -> dict:
             "decision": decision,
             "applied": 1 if applied else 0,
             "error": error,
+            "overnight_min_temp_c": overnight_min_temp,
+            "prewarm_scheduled": prewarm_scheduled,
         }
         db.log_decision(conn, record)
         conn.close()
@@ -148,6 +184,112 @@ def _pick_libbi_serial(conn) -> str:
     return ""
 
 
+def _apply_prewarm(plan: dict) -> None:
+    """One-shot job: enable charging at the planned pre-warm start time."""
+    global _last_prewarm
+    conn = db.get_conn()
+    libbi_serial = LIBBI_SERIAL or _pick_libbi_serial(conn)
+    conn.close()
+    session = client.make_session(HUB_SERIAL, API_KEY)
+    base_url = client.discover_hub_url(session)
+    applied, error = libbi_control.set_libbi_charging(
+        session, base_url, libbi_serial, enable=True
+    )
+    _last_prewarm = datetime.now(timezone.utc)
+    logger.info("apply_prewarm: applied=%s error=%s plan=%s", applied, error, plan)
+
+
+def job_prewarm_plan() -> dict:
+    """Plan tonight's pre-warm from the actual battery cell temperature.
+
+    Runs at 00:10. If tonight's decision was 'enable', reads the latest cell
+    temp (minute-level cgi-jday `batt` field) and SOC, then picks the lead
+    time that minimises cost: pre-warm energy charges the battery at standard
+    rate (+11p/kWh vs off-peak), so the optimum starts the window below
+    full-rate temperature whenever 02:00-05:00 can still deliver the required
+    charge. A one-shot enable is scheduled at 02:00 minus the chosen lead.
+    """
+    logger.info("prewarm_plan: starting")
+    try:
+        today = date.today().isoformat()
+        conn = db.get_conn()
+        decision_rec = db.get_latest_decision_for_date(conn, today)
+
+        if not decision_rec or decision_rec["decision"] != "enable":
+            logger.info(
+                "prewarm_plan: decision for %s is '%s' — skipping",
+                today, decision_rec["decision"] if decision_rec else "none",
+            )
+            conn.close()
+            return {"skipped": "decision_not_enable", "for_date": today}
+
+        ambient_min = db.get_overnight_min_temp(conn, today)
+
+        session = client.make_session(HUB_SERIAL, API_KEY)
+        base_url = client.discover_hub_url(session)
+        batt_temp = client.get_libbi_battery_temp(session, base_url, LIBBI_SERIAL)
+        if batt_temp is None:
+            # Fall back to forecast ambient as a conservative cell-temp proxy
+            batt_temp = ambient_min
+        if batt_temp is None:
+            conn.close()
+            logger.warning("prewarm_plan: no battery or ambient temperature — skipping")
+            return {"skipped": "no_temperature_data"}
+
+        soc = client.get_libbi_soc(session, base_url, LIBBI_SERIAL)
+        e_req = decision_rec.get("battery_deficit_kwh") or (LIBBI_CAP * (100 - soc) / 100)
+
+        now = datetime.now()
+        offpeak_start = now.replace(hour=OFFPEAK_START_HOUR, minute=0, second=0, microsecond=0)
+        if offpeak_start < now:
+            offpeak_start += timedelta(days=1)
+        minutes_until = int((offpeak_start - now).total_seconds() // 60)
+
+        plan = prewarm_model.optimal_lead(
+            temp_c=batt_temp,
+            e_req_kwh=e_req,
+            soc_pct=soc,
+            max_lead_min=min(PREWARM_LEAD_MINUTES, minutes_until),
+            ambient_c=ambient_min,
+            minutes_until_offpeak=minutes_until,
+        )
+        plan.update({
+            "batt_temp_c": batt_temp,
+            "soc_pct": soc,
+            "e_req_kwh": round(e_req, 2),
+            "overnight_min_temp_c": ambient_min,
+        })
+
+        db.update_decision_prewarm(conn, decision_rec["id"], plan["lead_min"], batt_temp)
+        conn.close()
+
+        if plan["lead_min"] <= 0:
+            logger.info("prewarm_plan: no pre-warm needed — %s", plan)
+            return {"prewarm_needed": False, **plan}
+
+        start = prewarm_model.prewarm_start_time(now, plan["lead_min"])
+        if _scheduler is not None:
+            _scheduler.add_job(
+                func=_apply_prewarm,
+                trigger="date",
+                run_date=start,
+                args=[plan],
+                id="prewarm_apply",
+                replace_existing=True,
+                misfire_grace_time=600,
+            )
+        plan["start_at"] = start.isoformat()
+        logger.info("prewarm_plan: scheduled enable at %s — %s", start, plan)
+        return {"prewarm_needed": True, **plan}
+    except Exception:
+        logger.exception("prewarm_plan failed")
+        return {"error": "Unexpected error — check logs"}
+
+
+# Manual dashboard trigger runs the same planning logic
+job_prewarm = job_prewarm_plan
+
+
 def build_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(
@@ -163,6 +305,14 @@ def build_scheduler() -> BackgroundScheduler:
         id="nightly_decision",
         misfire_grace_time=900,
     )
+    scheduler.add_job(
+        func=job_prewarm_plan,
+        trigger=CronTrigger(hour=0, minute=10),
+        id="prewarm_plan",
+        misfire_grace_time=600,
+    )
+    global _scheduler
+    _scheduler = scheduler
     return scheduler
 
 
@@ -170,6 +320,10 @@ def get_job_status() -> dict:
     return {
         "last_sync": _last_sync.isoformat() if _last_sync else None,
         "last_decision": _last_decision.isoformat() if _last_decision else None,
+        "last_prewarm": _last_prewarm.isoformat() if _last_prewarm else None,
         "sync_interval_hours": SYNC_INTERVAL_HOURS,
         "next_decision": "23:00 local time",
+        "next_prewarm_plan": "00:10 local time",
+        "prewarm_threshold_c": PREWARM_THRESHOLD_C,
+        "prewarm_max_lead_minutes": PREWARM_LEAD_MINUTES,
     }

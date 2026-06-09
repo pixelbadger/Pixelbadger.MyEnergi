@@ -94,6 +94,28 @@ def get_libbi_soc(session: requests.Session, base_url: str, libbi_serial: str) -
     return float(libbi_list[0]["soc"])
 
 
+def get_libbi_battery_temp(
+    session: requests.Session,
+    base_url: str,
+    libbi_serial: str,
+) -> float | None:
+    """Latest battery cell temperature (°C) from today's minute-level data.
+
+    Live cgi-jstatus has no temperature field; the minute endpoint (cgi-jday)
+    carries `batt` and works for the current day, so the last record with a
+    non-null `batt` is at most a few minutes old.
+    """
+    today = date.today()
+    url = f"{base_url}/cgi-jday-L{libbi_serial}-{today.year}-{today.month}-{today.day}"
+    r = session.get(url, timeout=30)
+    r.raise_for_status()
+    records = r.json().get(f"U{libbi_serial}", [])
+    for rec in reversed(records):
+        if rec.get("batt") is not None:
+            return float(rec["batt"])
+    return None
+
+
 def fetch_day_hourly(
     session: requests.Session,
     base_url: str,

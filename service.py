@@ -47,8 +47,10 @@ def index():
     conn = db.get_conn()
     device = db.get_preferred_device(conn)
     daily_data: list[dict] = []
+    weather_data: list[dict] = []
     if device:
-        daily_data = db.get_daily_summary(conn, from_date, to_date, device[0], device[1])
+        daily_data   = db.get_daily_summary(conn, from_date, to_date, device[0], device[1])
+        weather_data = db.get_weather_range(conn, from_date, to_date)
     decisions = db.get_decisions(conn, limit=20)
     conn.close()
     return render_template(
@@ -56,10 +58,12 @@ def index():
         from_date=from_date,
         to_date=to_date,
         daily_data=daily_data,
+        weather_data=weather_data,
         decisions=decisions,
         device=device,
         dry_run=libbi_control.DRY_RUN,
         service_token=SERVICE_TOKEN,
+        prewarm_threshold_c=sched.PREWARM_THRESHOLD_C,
     )
 
 
@@ -118,6 +122,26 @@ def api_trigger_decision():
         if token != SERVICE_TOKEN:
             abort(403)
     result = sched.job_nightly_decision()
+    return jsonify(result)
+
+
+@app.route("/api/weather-summary")
+def api_weather_summary():
+    to_date   = request.args.get("to",   date.today().isoformat())
+    from_date = request.args.get("from", (date.today() - timedelta(days=30)).isoformat())
+    conn = db.get_conn()
+    data = db.get_weather_range(conn, from_date, to_date)
+    conn.close()
+    return jsonify(data)
+
+
+@app.route("/api/trigger-prewarm", methods=["POST"])
+def api_trigger_prewarm():
+    if SERVICE_TOKEN:
+        token = request.headers.get("X-Auth-Token", "")
+        if token != SERVICE_TOKEN:
+            abort(403)
+    result = sched.job_prewarm()
     return jsonify(result)
 
 

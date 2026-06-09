@@ -47,7 +47,24 @@ def init_schema(conn: sqlite3.Connection) -> None:
             applied             INTEGER NOT NULL DEFAULT 0,
             error               TEXT
         );
+        CREATE TABLE IF NOT EXISTS hourly_weather (
+            date   TEXT    NOT NULL,
+            hour   INTEGER NOT NULL,
+            temp_c REAL    NOT NULL,
+            PRIMARY KEY (date, hour)
+        );
     """)
+    # Migrate existing decisions table (safe to run repeatedly)
+    for _col in [
+        "ALTER TABLE decisions ADD COLUMN overnight_min_temp_c REAL",
+        "ALTER TABLE decisions ADD COLUMN prewarm_scheduled INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE decisions ADD COLUMN prewarm_lead_min REAL",
+        "ALTER TABLE decisions ADD COLUMN prewarm_batt_temp_c REAL",
+    ]:
+        try:
+            conn.execute(_col)
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
 
 
@@ -60,20 +77,103 @@ def insert_hourly_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
     conn.commit()
 
 
+def insert_weather_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """Upsert (date, hour, temp_c) tuples into hourly_weather."""
+    conn.executemany(
+        "INSERT OR REPLACE INTO hourly_weather VALUES (?,?,?)",
+        rows,
+    )
+    conn.commit()
+
+
+def get_overnight_min_temp(conn: sqlite3.Connection, for_date: str) -> float | None:
+    """Return minimum temperature in the overnight window around for_date.
+
+    Window: hour 23 of the prior day UNION hours 0-4 of for_date.
+    Covers the period when the battery would be warming/charging (23:00–05:00).
+    """
+    row = conn.execute(
+        """
+        SELECT MIN(temp_c)
+        FROM hourly_weather
+        WHERE (date = DATE(:d, '-1 day') AND hour = 23)
+           OR (date = :d AND hour BETWEEN 0 AND 4)
+        """,
+        {"d": for_date},
+    ).fetchone()
+    return row[0] if row and row[0] is not None else None
+
+
+def update_decision_prewarm(
+    conn: sqlite3.Connection,
+    decision_id: int,
+    lead_min: float,
+    batt_temp_c: float | None,
+) -> None:
+    """Record the planned pre-warm lead and measured cell temp on a decision."""
+    conn.execute(
+        "UPDATE decisions SET prewarm_lead_min = ?, prewarm_batt_temp_c = ? WHERE id = ?",
+        (lead_min, batt_temp_c, decision_id),
+    )
+    conn.commit()
+
+
+def get_latest_decision_for_date(conn: sqlite3.Connection, for_date: str) -> dict | None:
+    """Return the most recent decisions row for a given for_date."""
+    row = conn.execute(
+        "SELECT * FROM decisions WHERE for_date = ? ORDER BY decided_at DESC LIMIT 1",
+        (for_date,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_weather_range(conn: sqlite3.Connection, from_date: str, to_date: str) -> list[dict]:
+    """Daily overnight min temperature for dashboard overlay.
+
+    Returns [{'date': 'YYYY-MM-DD', 'overnight_min_c': float}, ...] ordered by date.
+    Uses same overnight window as get_overnight_min_temp.
+    """
+    rows = conn.execute(
+        """
+        SELECT target_date AS date, MIN(temp_c) AS overnight_min_c
+        FROM (
+            SELECT DATE(date, '+1 day') AS target_date, temp_c
+            FROM hourly_weather
+            WHERE hour = 23
+            UNION ALL
+            SELECT date AS target_date, temp_c
+            FROM hourly_weather
+            WHERE hour BETWEEN 0 AND 4
+        )
+        WHERE target_date BETWEEN :from_date AND :to_date
+        GROUP BY target_date
+        ORDER BY target_date
+        """,
+        {"from_date": from_date, "to_date": to_date},
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def log_decision(conn: sqlite3.Connection, record: dict) -> int:
     cur = conn.execute(
         """
         INSERT INTO decisions (
             decided_at, for_date, soc_pct, battery_stored_kwh,
             battery_deficit_kwh, forecast_kwh, daily_load_avg_kwh,
-            solar_needed_kwh, surplus_kwh, decision, applied, error
+            solar_needed_kwh, surplus_kwh, decision, applied, error,
+            overnight_min_temp_c, prewarm_scheduled
         ) VALUES (
             :decided_at, :for_date, :soc_pct, :battery_stored_kwh,
             :battery_deficit_kwh, :forecast_kwh, :daily_load_avg_kwh,
-            :solar_needed_kwh, :surplus_kwh, :decision, :applied, :error
+            :solar_needed_kwh, :surplus_kwh, :decision, :applied, :error,
+            :overnight_min_temp_c, :prewarm_scheduled
         )
         """,
-        record,
+        {
+            **record,
+            "overnight_min_temp_c": record.get("overnight_min_temp_c"),
+            "prewarm_scheduled": record.get("prewarm_scheduled", 0),
+        },
     )
     conn.commit()
     return cur.lastrowid

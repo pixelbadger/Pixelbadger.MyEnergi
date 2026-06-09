@@ -52,6 +52,8 @@
     .badge.applied { background: #14532d; color: #86efac; }
     .badge.dryrun { background: #27272a; color: #a1a1aa; }
     .badge.error { background: #450a0a; color: #fca5a5; }
+    .badge.prewarm { background: #1e3a5f; color: #7dd3fc; }
+    .temp-cold { color: #7dd3fc; }
     .no-decisions { color: #475569; font-size: 0.85rem; padding: 1rem 0; }
 
     .controls-bar { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 0.75rem 1.25rem; margin-bottom: 1.5rem; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
@@ -84,6 +86,7 @@
 <main>
   <div class="controls-bar">
     <button id="btnDecision" class="btn btn-primary" onclick="triggerDecision()">Run Decision Now</button>
+    <button id="btnPrewarm" class="btn btn-primary" onclick="triggerPrewarm()">Plan Pre-warm</button>
     <button id="btnDryRun" class="btn {{ 'btn-dryrun-on' if dry_run else 'btn-dryrun-off' }}"
             onclick="toggleDryRun()">
       Dry Run: {{ 'ON' if dry_run else 'OFF' }}
@@ -114,6 +117,7 @@
         <span class="legend-item"><span class="legend-dot" style="background:#fca5a5"></span>Peak import</span>
         <span class="legend-item"><span class="legend-dot" style="background:#86efac"></span>Grid export</span>
         <span class="legend-item"><span class="legend-dot" style="background:#fde047;border-radius:50%"></span>Solar gen</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#38bdf8;border-radius:50%;border:1px dashed #38bdf8"></span>Overnight min °C</span>
       </div>
       <div class="chart-wrap"><canvas id="energyChart"></canvas></div>
     </div>
@@ -152,6 +156,8 @@
           <th>SOC at decision</th>
           <th>Forecast</th>
           <th>Surplus / Shortfall</th>
+          <th>Overnight min</th>
+          <th>Pre-warm</th>
           <th>Status</th>
         </tr>
       </thead>
@@ -172,6 +178,22 @@
             {% else %}
               {{ "%.1f"|format(d.surplus_kwh) }} kWh shortfall
             {% endif %}
+          </td>
+          <td>
+            {% if d.overnight_min_temp_c is not none %}
+              <span class="{{ 'temp-cold' if d.overnight_min_temp_c < prewarm_threshold_c }}">
+                {{ "%.1f"|format(d.overnight_min_temp_c) }}°C{% if d.overnight_min_temp_c < prewarm_threshold_c %} ❄{% endif %}
+              </span>
+            {% else %}—{% endif %}
+          </td>
+          <td>
+            {% if d.prewarm_lead_min is not none and d.prewarm_lead_min > 0 %}
+              <span class="badge prewarm">{{ d.prewarm_lead_min|int }} min{% if d.prewarm_batt_temp_c is not none %} @ {{ "%.0f"|format(d.prewarm_batt_temp_c) }}°C{% endif %}</span>
+            {% elif d.prewarm_lead_min is not none %}
+              not needed
+            {% elif d.prewarm_scheduled %}
+              <span class="badge prewarm">Flagged</span>
+            {% else %}—{% endif %}
           </td>
           <td>
             {% if d.error == 'dry-run' or (d.applied == 1 and d.error is none and not d.error) %}
@@ -214,6 +236,31 @@ function showToast(msg, type) {
   t.className = 'toast show ' + type;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.className = 'toast'; }, 4000);
+}
+
+async function triggerPrewarm() {
+  const btn = document.getElementById('btnPrewarm');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  try {
+    const r = await fetch('/api/trigger-prewarm', { method: 'POST', headers: authHeaders() });
+    const d = await r.json();
+    if (!r.ok) { showToast('Error: ' + (d.error || r.status), 'err'); return; }
+    let msg;
+    if (d.prewarm_needed) {
+      msg = `Pre-warm scheduled: ${d.lead_min} min lead (batt ${d.batt_temp_c?.toFixed(0)}°C, start ${d.start_at?.slice(11,16)})`;
+    } else if (d.prewarm_needed === false) {
+      msg = `No pre-warm needed — batt ${d.batt_temp_c?.toFixed(0)}°C, window covers ${d.e_req_kwh} kWh`;
+    } else {
+      msg = `Skipped: ${d.skipped || d.error || JSON.stringify(d)}`;
+    }
+    showToast(msg, d.prewarm_needed === undefined ? 'err' : 'ok');
+  } catch(e) {
+    showToast('Request failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Plan Pre-warm';
+  }
 }
 
 async function triggerDecision() {
@@ -259,10 +306,14 @@ async function toggleDryRun() {
   }
 }
 
-const DAILY = {{ daily_data | tojson }};
+const DAILY   = {{ daily_data | tojson }};
+const WEATHER = {{ weather_data | tojson }};
+const PREWARM_THRESHOLD_C = {{ prewarm_threshold_c }};
 
 {% if daily_data %}
 const labels = DAILY.map(d => d.date);
+const weatherByDate = {};
+WEATHER.forEach(w => { weatherByDate[w.date] = w; });
 
 const chartDefaults = {
   plugins: { legend: { display: false } },
@@ -313,6 +364,22 @@ new Chart(document.getElementById('energyChart'), {
         tension: 0.3,
         order: -1,
       },
+      {
+        label: 'Overnight min temp (°C)',
+        data: labels.map(d => {
+          const w = weatherByDate[d];
+          return w != null ? +w.overnight_min_c.toFixed(1) : null;
+        }),
+        type: 'line',
+        yAxisID: 'yTemp',
+        borderColor: '#38bdf8',
+        backgroundColor: 'transparent',
+        borderDash: [4, 3],
+        pointRadius: 2,
+        tension: 0.3,
+        spanGaps: false,
+        order: -2,
+      },
     ],
   },
   options: {
@@ -320,6 +387,13 @@ new Chart(document.getElementById('energyChart'), {
     scales: {
       ...chartDefaults.scales,
       y: { ...chartDefaults.scales.y, stacked: true, title: { display: true, text: 'kWh', color: '#64748b' } },
+      yTemp: {
+        type: 'linear',
+        position: 'right',
+        title: { display: true, text: '°C', color: '#38bdf8' },
+        ticks: { color: '#38bdf8' },
+        grid: { drawOnChartArea: false },
+      },
     },
   },
 });
