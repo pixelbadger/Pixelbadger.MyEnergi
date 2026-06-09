@@ -13,7 +13,7 @@ Home energy management for a Libbi battery + solar + a 3-band time-of-use tariff
 | File | Role |
 |------|------|
 | `service.py` | Entry point — Flask + APScheduler daemon |
-| `myenergi_client.py` | Shared MyEnergi + Forecast.Solar API client |
+| `myenergi_client.py` | MyEnergi hub (digest auth), Solcast and Cognito API client |
 | `db.py` | SQLite helpers (hourly_energy + decisions + hourly_weather tables) |
 | `tariff.py` | Shared tariff + battery config from `.env` (windows, prices, capacity) — validates at import |
 | `scheduler.py` | Background jobs: sync history (interval), nightly charge decision (23:00), pre-warm planning (00:10) |
@@ -79,8 +79,8 @@ TARIFF_PEAK_P=36.0
 - **Live status**: `GET https://{asn}/cgi-jstatus-*`
 - **Hourly history**: `GET https://{asn}/cgi-jdayhour-L{serial}-{YYYY}-{M}-{D}` (values in Joules → divide by 3,600,000 for kWh; Libbi records carry `bcp1`/`bdp1` battery charge/discharge energy and `soc1`)
 - **Minute history**: `GET https://{asn}/cgi-jday-L{serial}-{YYYY}-{M}-{D}` — works for the current day; includes `batt` (battery cell temp °C), `ambt` (ambient), `bcp1` (J/min → W = /60), `soc1`. Live `cgi-jstatus` has **no** temperature field.
-- **Libbi control** (unconfirmed): `GET /cgi-set-lmo-L{serial}-{mode}` — mode 1=Normal, 4=Stopped
-  - Verify via `pymyenergi` source before setting `DRY_RUN=false`
+- **Libbi mode** (local hub API): `GET /cgi-libbi-mode-L{serial}-{mode}` — mode 1=Normal, 0=Stopped
+- **Charge-from-grid** (cloud only — local API cannot set it): `PUT https://myaccount.myenergi.com/api/AccountAccess/LibbiMode?chargeFromGrid=true|false&serialNo={serial}` with a Cognito bearer token from the myenergi app login (`MYENERGI_APP_EMAIL`/`_PASSWORD`); `libbi_control.set_libbi_charging` resets mode to Normal first, then sets the flag and verifies by readback
 
 ## Database Schema
 

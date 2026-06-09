@@ -76,7 +76,10 @@
     .install-block code {
       display: block;
       font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", monospace;
-      font-size: 1rem;
+      font-size: 0.85rem;
+      overflow-x: auto;
+      white-space: nowrap;
+      text-align: left;
       color: #86efac;
       background: #0f172a;
       border: 1px solid #1e3a5f;
@@ -233,7 +236,7 @@
 
   <div class="install-block">
     <h3>One-command install</h3>
-    <code id="installCmd" onclick="copyInstall()">bash install.sh</code>
+    <code id="installCmd" onclick="copyInstall()">curl -fsSL https://raw.githubusercontent.com/pixelbadger/Pixelbadger.MyEnergi/master/install.sh | bash</code>
     <p class="copy-hint" id="copyHint">click to copy</p>
   </div>
 </header>
@@ -280,20 +283,20 @@
     <ol class="steps">
       <li>
         <div>
-          <strong>Clone the repo</strong>
-          <p>git clone https://github.com/pixelbadger/Pixelbadger.MyEnergi.git</p>
+          <strong>Run the one-line installer</strong>
+          <p>Clones the repo to ~/myenergi, installs dependencies, and registers a systemd user service that starts on boot. (From an existing checkout, <code style="background:none;border:none;padding:0;color:#93c5fd;font-size:inherit">bash install.sh</code> does the same without cloning.)</p>
         </div>
       </li>
       <li>
         <div>
-          <strong>Copy and fill in <code style="background:none;border:none;padding:0;color:#93c5fd;font-size:inherit">.env</code></strong>
-          <p>Hub serial + API key from myaccount.myenergi.com, Solcast resource ID + key, and your myenergi app login for charge control.</p>
+          <strong>Enter your credentials when prompted</strong>
+          <p>Hub serial + API key from myaccount.myenergi.com, Solcast resource ID + key, and your myenergi app login for charge control — written to <code style="background:none;border:none;padding:0;color:#93c5fd;font-size:inherit">.env</code> (kept local, never committed).</p>
         </div>
       </li>
       <li>
         <div>
-          <strong>Run the installer</strong>
-          <p>Installs dependencies and registers a systemd user service that starts on boot.</p>
+          <strong>Start the service</strong>
+          <p>systemctl --user start myenergi</p>
         </div>
       </li>
       <li>
@@ -327,7 +330,7 @@
 
 <script>
   function copyInstall() {
-    navigator.clipboard.writeText('bash install.sh').then(() => {
+    navigator.clipboard.writeText(document.getElementById('installCmd').textContent).then(() => {
       const hint = document.getElementById('copyHint');
       hint.textContent = 'copied!';
       hint.classList.add('copied');

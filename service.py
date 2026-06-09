@@ -4,6 +4,7 @@ MyEnergi home energy management service.
 Runs a Flask web server with an APScheduler background scheduler.
 - Syncs recent history from the MyEnergi hub every SYNC_INTERVAL_HOURS hours
 - Runs a nightly charge decision at 23:00
+- Plans a cold-weather battery pre-warm at 00:10 (one-shot enable before off-peak)
 - Exposes a web dashboard at http://0.0.0.0:SERVICE_PORT
 
 Usage:
