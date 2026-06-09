@@ -6,7 +6,7 @@ Three recurring jobs:
   nightly_decision — runs at 23:00 to decide whether to enable overnight charging
   prewarm_plan     — runs at 00:10 to pick a cost-optimal pre-warm start time
                      from the actual battery cell temperature, then schedules a
-                     one-shot charge-enable before the 02:00 off-peak window
+                     one-shot charge-enable before the configured off-peak window
 """
 
 import logging
@@ -22,6 +22,7 @@ import db
 import libbi_control
 import myenergi_client as client
 import prewarm_model
+import tariff
 import weather_client
 
 logger = logging.getLogger(__name__)
@@ -30,12 +31,12 @@ SYNC_INTERVAL_HOURS      = int(os.environ.get("SYNC_INTERVAL_HOURS", "4"))
 HUB_SERIAL               = os.environ.get("MYENERGI_HUB_SERIAL", "")
 API_KEY                  = os.environ.get("MYENERGI_API_KEY", "")
 LIBBI_SERIAL             = os.environ.get("MYENERGI_LIBBI_SERIAL", "").strip()
-LIBBI_CAP                = float(os.environ.get("LIBBI_CAPACITY_KWH", "10.0"))
+LIBBI_CAP                = tariff.LIBBI_CAPACITY_KWH
 WEATHER_LAT              = os.environ.get("WEATHER_LAT", "").strip()
 WEATHER_LON              = os.environ.get("WEATHER_LON", "").strip()
 PREWARM_THRESHOLD_C      = float(os.environ.get("PREWARM_THRESHOLD_C", "2.0"))
 PREWARM_LEAD_MINUTES     = int(os.environ.get("PREWARM_LEAD_MINUTES", "120"))
-OFFPEAK_START_HOUR       = 2  # Octopus Flux off-peak starts 02:00
+OFFPEAK_START_HOUR       = tariff.OFFPEAK_START_HOUR
 
 _last_sync: datetime | None = None
 _last_decision: datetime | None = None
@@ -204,10 +205,11 @@ def job_prewarm_plan() -> dict:
 
     Runs at 00:10. If tonight's decision was 'enable', reads the latest cell
     temp (minute-level cgi-jday `batt` field) and SOC, then picks the lead
-    time that minimises cost: pre-warm energy charges the battery at standard
-    rate (+11p/kWh vs off-peak), so the optimum starts the window below
-    full-rate temperature whenever 02:00-05:00 can still deliver the required
-    charge. A one-shot enable is scheduled at 02:00 minus the chosen lead.
+    time that minimises cost: pre-warm energy charges the battery at the
+    standard rate rather than off-peak, so the optimum starts the window below
+    full-rate temperature whenever the off-peak window can still deliver the
+    required charge. A one-shot enable is scheduled at off-peak start minus
+    the chosen lead.
     """
     logger.info("prewarm_plan: starting")
     try:
@@ -326,4 +328,5 @@ def get_job_status() -> dict:
         "next_prewarm_plan": "00:10 local time",
         "prewarm_threshold_c": PREWARM_THRESHOLD_C,
         "prewarm_max_lead_minutes": PREWARM_LEAD_MINUTES,
+        "offpeak_window": f"{tariff.OFFPEAK_START_HOUR:02d}:00-{tariff.OFFPEAK_END_HOUR:02d}:00",
     }

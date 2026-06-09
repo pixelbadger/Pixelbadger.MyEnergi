@@ -14,22 +14,23 @@ The Libbi BMS caps charge power as a function of battery cell temperature
     actual on 2026-01-06 (−4.2°C night) was ~9.5 kWh.
 
 Economics: pre-warm energy is not wasted — it charges the battery at the
-standard rate instead of off-peak (+11p/kWh premium on Flux). A shortfall kWh
-costs the same premium (next-day standard import the battery would have
-covered), or more if it lands in the 16:00–19:00 peak. optimal_lead() scans
-candidate lead times and minimises total cost, so it naturally prefers
+standard rate instead of off-peak (the standard−off-peak premium). A
+shortfall kWh costs the same premium (next-day standard import the battery
+would have covered), or more if it lands in the peak window. optimal_lead()
+scans candidate lead times and minimises total cost, so it naturally prefers
 starting the off-peak window below full-rate temperature whenever the window
 can still deliver the required charge.
 """
 
-import os
 from datetime import datetime, timedelta
 
-LIBBI_CAP = float(os.environ.get("LIBBI_CAPACITY_KWH", "10.0"))
+import tariff
 
-TARIFF_OFFPEAK_P  = float(os.environ.get("TARIFF_OFFPEAK_P", "18.0"))
-TARIFF_STANDARD_P = float(os.environ.get("TARIFF_STANDARD_P", "29.0"))
-TARIFF_PEAK_P     = float(os.environ.get("TARIFF_PEAK_P", "36.0"))
+LIBBI_CAP = tariff.LIBBI_CAPACITY_KWH
+
+TARIFF_OFFPEAK_P  = tariff.OFFPEAK_P
+TARIFF_STANDARD_P = tariff.STANDARD_P
+TARIFF_PEAK_P     = tariff.PEAK_P
 
 # Median charge power cap (W) vs battery cell temp (°C), winter 2025-26
 P_CAP_CURVE = [
@@ -40,7 +41,7 @@ WARM_HEATER_C_PER_MIN = 0.24  # charging, batt < 14°C (heater-dominated)
 WARM_LOSSES_C_PER_MIN = 0.06  # charging, batt >= 14°C
 COOL_IDLE_C_PER_H     = 1.0   # idle drift toward ambient
 HEATER_CUTOFF_C       = 14.0
-OFFPEAK_DURATION_MIN  = 180   # 02:00-05:00
+OFFPEAK_DURATION_MIN  = tariff.OFFPEAK_DURATION_MIN
 
 
 def p_cap_w(temp_c: float) -> float:
@@ -59,10 +60,12 @@ def simulate(
     lead_min: int,
     soc_pct: float,
 ) -> tuple[float, float, float]:
-    """Simulate charging from (02:00 − lead_min) to 05:00 in 1-minute steps.
+    """Simulate charging from (off-peak start − lead_min) to off-peak end
+    in 1-minute steps.
 
     Returns (e_pre, e_window, shortfall) in kWh, where e_pre is energy drawn
-    before 02:00 (standard rate) and e_window during off-peak.
+    before the off-peak window opens (standard rate) and e_window during
+    off-peak.
     """
     temp, soc = temp_c, soc_pct
     e_total = e_pre = 0.0
@@ -90,7 +93,8 @@ def optimal_lead(
     ambient_c: float | None = None,
     minutes_until_offpeak: int | None = None,
 ) -> dict:
-    """Find the pre-warm lead time (minutes before 02:00) that minimises cost.
+    """Find the pre-warm lead time (minutes before the off-peak window)
+    that minimises cost.
 
     temp_c is the battery cell temp at planning time; if minutes_until_offpeak
     and ambient_c are given, idle cooling is applied between the reading and
@@ -121,6 +125,9 @@ def optimal_lead(
 
 
 def prewarm_start_time(today: datetime, lead_min: int) -> datetime:
-    """Local datetime to enable charging: 02:00 minus the lead."""
-    offpeak = today.replace(hour=2, minute=0, second=0, microsecond=0)
+    """Local datetime to enable charging: off-peak start minus the lead."""
+    offpeak = today.replace(hour=tariff.OFFPEAK_START_HOUR, minute=0,
+                            second=0, microsecond=0)
+    if offpeak <= today:
+        offpeak += timedelta(days=1)
     return offpeak - timedelta(minutes=lead_min)

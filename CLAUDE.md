@@ -1,11 +1,11 @@
 # MyEnergi Home Energy Service
 
-Home energy management for a Libbi battery + solar + Octopus Flux setup.
+Home energy management for a Libbi battery + solar + a 3-band time-of-use tariff.
 
 ## Hardware
 
-- **Libbi battery** serial: `24039839`
-- **Tariff**: Octopus Flux — off-peak 02:00–05:00 (~18p import), standard 05:00–16:00/19:00–02:00 (~29p), peak 16:00–19:00 (~36p import/export)
+- **Libbi battery** — serial set via `MYENERGI_LIBBI_SERIAL` in `.env`
+- **Tariff**: 3-band (off-peak / standard / peak), windows and prices configured via `TARIFF_*` in `.env` — defaults match Octopus Flux: off-peak 02:00–05:00 (~18p import), standard 05:00–16:00/19:00–02:00 (~29p), peak 16:00–19:00 (~36p)
 - Solar panels: site registered on Solcast; `SOLCAST_RESOURCE_ID` + `SOLCAST_API_KEY` in `.env`
 
 ## File Overview
@@ -15,6 +15,7 @@ Home energy management for a Libbi battery + solar + Octopus Flux setup.
 | `service.py` | Entry point — Flask + APScheduler daemon |
 | `myenergi_client.py` | Shared MyEnergi + Forecast.Solar API client |
 | `db.py` | SQLite helpers (hourly_energy + decisions + hourly_weather tables) |
+| `tariff.py` | Shared tariff + battery config from `.env` (windows, prices, capacity) — validates at import |
 | `scheduler.py` | Background jobs: sync history (interval), nightly charge decision (23:00), pre-warm planning (00:10) |
 | `libbi_control.py` | Libbi charging enable/disable — DRY_RUN=true by default |
 | `prewarm_model.py` | Calibrated battery thermal model + cost-optimal pre-warm lead solver |
@@ -23,7 +24,7 @@ Home energy management for a Libbi battery + solar + Octopus Flux setup.
 | `fetch_weather.py` | CLI: historical weather backfill → data.db |
 | `templates/index.html` | Web dashboard (Chart.js, no build step) |
 | `data.db` | SQLite store (gitignored) |
-| `.env` | All credentials and config (gitignored) |
+| `.env` | All credentials and config (gitignored) — see `.env.example` |
 
 ## Running the Service
 
@@ -50,7 +51,7 @@ python fetch_weather.py          # historical weather backfill (set WEATHER_LAT/
 ```
 MYENERGI_HUB_SERIAL=<hub serial, starts with 10...>
 MYENERGI_API_KEY=<from myaccount.myenergi.com>
-MYENERGI_LIBBI_SERIAL=24039839
+MYENERGI_LIBBI_SERIAL=2xxxxxxx
 LIBBI_CAPACITY_KWH=10.0
 SOLCAST_RESOURCE_ID=<site UUID from solcast.com/rooftop-solar/dashboard>
 SOLCAST_API_KEY=<API key from Solcast account>
@@ -62,7 +63,11 @@ WEATHER_LAT=<decimal latitude of property>
 WEATHER_LON=<decimal longitude of property>
 PREWARM_THRESHOLD_C=2.0     # 23:00 forecast flag only (dashboard ❄) — actual gating uses cell temp
 PREWARM_LEAD_MINUTES=120    # max lead the 00:10 planner may choose
-TARIFF_OFFPEAK_P=18.0       # Flux off-peak pence/kWh (02:00-05:00)
+TARIFF_OFFPEAK_START=2      # window hours: integer, end-exclusive (2→5 = 02:00-05:00);
+TARIFF_OFFPEAK_END=5        #   no midnight wrap; off-peak start must be ≥1 (planner runs 00:10)
+TARIFF_PEAK_START=16
+TARIFF_PEAK_END=19
+TARIFF_OFFPEAK_P=18.0       # import pence/kWh (defaults = Octopus Flux)
 TARIFF_STANDARD_P=29.0
 TARIFF_PEAK_P=36.0
 ```
@@ -111,7 +116,8 @@ At 00:10 `job_prewarm_plan` reads the actual cell temp (today's `cgi-jday`)
 and SOC, then `prewarm_model.optimal_lead()` scans lead times (1-min charge
 simulation) minimising: pre-warm kWh at standard rate + window kWh at
 off-peak + shortfall kWh at standard. Pre-warm energy still charges the
-battery (+11p/kWh premium only), so the optimum usually starts the window
-*below* full-rate temp — e.g. lead 10 min at 1°C, 35 min at −5°C, 0 at ≥5°C
-or when half-full. A one-shot enable fires at 02:00 − lead. Planned lead and
-cell temp are logged to `decisions` for recalibration.
+battery (it only pays the standard−off-peak premium), so the optimum usually
+starts the window *below* full-rate temp — e.g. lead 10 min at 1°C, 35 min
+at −5°C, 0 at ≥5°C or when half-full. A one-shot enable fires at off-peak
+start − lead. Planned lead and cell temp are logged to `decisions` for
+recalibration.

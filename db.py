@@ -2,15 +2,23 @@
 SQLite helpers for the MyEnergi service.
 
 Provides schema initialisation, query functions, and write helpers used by
-service.py and scheduler.py. The existing CLI scripts (fetch_history.py,
-analyse.py) manage their own connections directly.
+service.py and scheduler.py. The CLI scripts (fetch_history.py,
+fetch_weather.py) manage their own connections directly.
 """
 
 import os
 import sqlite3
 from datetime import date
 
+import tariff
+
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "data.db"))
+
+# Tariff window hour lists for SQL interpolation. Safe to f-string into
+# queries: the values are module constants that have passed tariff._validate()
+# and each element goes through int(), so no user input reaches the SQL text.
+_OFFPEAK_HOURS_SQL = ",".join(str(int(h)) for h in tariff.OFFPEAK_HOURS)
+_PEAK_HOURS_SQL = ",".join(str(int(h)) for h in tariff.PEAK_HOURS)
 
 
 def get_conn() -> sqlite3.Connection:
@@ -89,17 +97,17 @@ def insert_weather_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
 def get_overnight_min_temp(conn: sqlite3.Connection, for_date: str) -> float | None:
     """Return minimum temperature in the overnight window around for_date.
 
-    Window: hour 23 of the prior day UNION hours 0-4 of for_date.
-    Covers the period when the battery would be warming/charging (23:00–05:00).
+    Window: hour 23 of the prior day UNION midnight → off-peak end of for_date.
+    Covers the period when the battery would be warming/charging.
     """
     row = conn.execute(
         """
         SELECT MIN(temp_c)
         FROM hourly_weather
         WHERE (date = DATE(:d, '-1 day') AND hour = 23)
-           OR (date = :d AND hour BETWEEN 0 AND 4)
+           OR (date = :d AND hour < :offpeak_end)
         """,
-        {"d": for_date},
+        {"d": for_date, "offpeak_end": tariff.OFFPEAK_END_HOUR},
     ).fetchone()
     return row[0] if row and row[0] is not None else None
 
@@ -143,13 +151,14 @@ def get_weather_range(conn: sqlite3.Connection, from_date: str, to_date: str) ->
             UNION ALL
             SELECT date AS target_date, temp_c
             FROM hourly_weather
-            WHERE hour BETWEEN 0 AND 4
+            WHERE hour < :offpeak_end
         )
         WHERE target_date BETWEEN :from_date AND :to_date
         GROUP BY target_date
         ORDER BY target_date
         """,
-        {"from_date": from_date, "to_date": to_date},
+        {"from_date": from_date, "to_date": to_date,
+         "offpeak_end": tariff.OFFPEAK_END_HOUR},
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -187,22 +196,23 @@ def get_daily_summary(
     serial: str,
 ) -> list[dict]:
     """
-    Aggregate hourly data into daily totals, split by Octopus Flux tariff window.
+    Aggregate hourly data into daily totals, split by the configured tariff
+    windows (see tariff.py; defaults match Octopus Flux).
 
-    Off-peak: hours 2-4 (02:00-05:00)
-    Peak:     hours 16-18 (16:00-19:00)
+    Off-peak: tariff.OFFPEAK_HOURS
+    Peak:     tariff.PEAK_HOURS
     Standard: all other hours
     """
     rows = conn.execute(
-        """
+        f"""
         SELECT
             date,
-            SUM(CASE WHEN hour IN (2,3,4)        THEN imp_kwh ELSE 0 END) AS offpeak_imp_kwh,
-            SUM(CASE WHEN hour IN (16,17,18)      THEN imp_kwh ELSE 0 END) AS peak_imp_kwh,
-            SUM(CASE WHEN hour NOT IN (2,3,4,16,17,18) THEN imp_kwh ELSE 0 END) AS standard_imp_kwh,
-            SUM(CASE WHEN hour IN (2,3,4)        THEN exp_kwh ELSE 0 END) AS offpeak_exp_kwh,
-            SUM(CASE WHEN hour IN (16,17,18)      THEN exp_kwh ELSE 0 END) AS peak_exp_kwh,
-            SUM(CASE WHEN hour NOT IN (2,3,4,16,17,18) THEN exp_kwh ELSE 0 END) AS standard_exp_kwh,
+            SUM(CASE WHEN hour IN ({_OFFPEAK_HOURS_SQL}) THEN imp_kwh ELSE 0 END) AS offpeak_imp_kwh,
+            SUM(CASE WHEN hour IN ({_PEAK_HOURS_SQL}) THEN imp_kwh ELSE 0 END) AS peak_imp_kwh,
+            SUM(CASE WHEN hour NOT IN ({_OFFPEAK_HOURS_SQL},{_PEAK_HOURS_SQL}) THEN imp_kwh ELSE 0 END) AS standard_imp_kwh,
+            SUM(CASE WHEN hour IN ({_OFFPEAK_HOURS_SQL}) THEN exp_kwh ELSE 0 END) AS offpeak_exp_kwh,
+            SUM(CASE WHEN hour IN ({_PEAK_HOURS_SQL}) THEN exp_kwh ELSE 0 END) AS peak_exp_kwh,
+            SUM(CASE WHEN hour NOT IN ({_OFFPEAK_HOURS_SQL},{_PEAK_HOURS_SQL}) THEN exp_kwh ELSE 0 END) AS standard_exp_kwh,
             SUM(gen_kwh)                          AS gen_kwh,
             SUM(imp_kwh)                          AS total_imp_kwh,
             SUM(exp_kwh)                          AS total_exp_kwh,

@@ -106,6 +106,11 @@ if [ "$RECONF" = "y" ]; then
     SOLCAST_API_KEY=$(ask_secret     "API key")
 
     echo ""
+    echo "==> Weather  (optional — enables cold-weather battery pre-warm)"
+    WEATHER_LAT=$(ask_default  "Property latitude (blank to skip)" "")
+    WEATHER_LON=$(ask_default  "Property longitude (blank to skip)" "")
+
+    echo ""
     echo "==> Service settings"
     SERVICE_PORT=$(ask_default   "Dashboard port" "5000")
     SERVICE_TOKEN=$(ask_secret   "API auth token (for /api/trigger-decision)")
@@ -124,6 +129,20 @@ SERVICE_PORT=$SERVICE_PORT
 SERVICE_TOKEN=$SERVICE_TOKEN
 SYNC_INTERVAL_HOURS=$SYNC_INTERVAL
 DRY_RUN=true
+WEATHER_LAT=$WEATHER_LAT
+WEATHER_LON=$WEATHER_LON
+PREWARM_THRESHOLD_C=2.0
+PREWARM_LEAD_MINUTES=120
+
+# Tariff — 3-band model, defaults = Octopus Flux. Edit to match your tariff.
+# Hours are end-exclusive integers; off-peak must start 01:00+ and not wrap midnight.
+TARIFF_OFFPEAK_START=2
+TARIFF_OFFPEAK_END=5
+TARIFF_PEAK_START=16
+TARIFF_PEAK_END=19
+TARIFF_OFFPEAK_P=18.0
+TARIFF_STANDARD_P=29.0
+TARIFF_PEAK_P=36.0
 ENVEOF
 
     chmod 600 "$ENV_FILE"

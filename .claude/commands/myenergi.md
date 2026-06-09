@@ -103,9 +103,11 @@ Same structure, higher resolution.
 
 ---
 
-## Octopus Flux Tariff Context
+## Tariff Context (example: Octopus Flux)
 
-This project's user is on **Octopus Flux**. Three daily windows:
+The 3-band tariff model (off-peak / standard / peak) is configured via the
+`TARIFF_*` vars in `.env` (windows + import prices; see `tariff.py`). Example —
+Octopus Flux, the defaults:
 
 | Window | Hours | Typical import rate | Export rate |
 |--------|-------|--------------------:|------------:|
@@ -113,7 +115,7 @@ This project's user is on **Octopus Flux**. Three daily windows:
 | Standard | 05:00–16:00, 19:00–02:00 | ~29p/kWh | ~15p/kWh |
 | Peak | 16:00–19:00 | ~36p/kWh | ~36p/kWh |
 
-Rates are configurable in `.env`. The key economic question: in summer, solar fills the Libbi regardless of off-peak grid charging, so off-peak charging wastes money.
+The key economic question: in summer, solar fills the Libbi regardless of off-peak grid charging, so off-peak charging wastes money.
 
 ---
 
@@ -121,9 +123,9 @@ Rates are configurable in `.env`. The key economic question: in summer, solar fi
 
 | File | Role |
 |------|------|
-| `.env` | Credentials + Flux rates + config |
+| `.env` | Credentials + tariff rates/windows + config |
+| `tariff.py` | Shared tariff + battery config module |
 | `fetch_history.py` | Pulls hourly data → `data.db` (SQLite, idempotent re-runs) |
-| `analyse.py` | Two-scenario Flux cost model → recommendation |
 | `data.db` | SQLite cache (table: `hourly_energy`) |
 
 ### SQLite schema

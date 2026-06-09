@@ -1,13 +1,13 @@
 # MyEnergi Home Energy Service
 
-Automated overnight charge management for a MyEnergi Libbi battery on Octopus Flux, with a web dashboard and Solcast solar forecast integration.
+Automated overnight charge management for a MyEnergi Libbi battery on a 3-band time-of-use tariff (any tariff with a cheap overnight window — defaults are configured for Octopus Flux), with a web dashboard and Solcast solar forecast integration.
 
 Each night at 23:00 the service fetches tomorrow's solar forecast, compares it against your average daily load and current battery deficit, and enables or disables mains charging accordingly — so the battery charges off-peak only when solar won't cover the next day's demand.
 
 ## Hardware & tariff
 
-- **Libbi** home battery (10 kWh)
-- **Octopus Flux** — off-peak import 02:00–05:00 (~18p), peak export 16:00–19:00 (~36p)
+- **Libbi** home battery (capacity set via `LIBBI_CAPACITY_KWH`)
+- A **time-of-use tariff** with off-peak, standard and peak bands — windows and prices set via the `TARIFF_*` vars (defaults: Octopus Flux — off-peak import 02:00–05:00 ~18p, peak 16:00–19:00 ~36p)
 - Rooftop solar registered on [Solcast](https://solcast.com/rooftop-solar/dashboard)
 
 ## Install
@@ -42,7 +42,7 @@ Copy `.env.example` to `.env` and fill in your values:
 # MyEnergi hub credentials (from myaccount.myenergi.com → Products → hub → API key)
 MYENERGI_HUB_SERIAL=10xxxxxx
 MYENERGI_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-MYENERGI_LIBBI_SERIAL=24039839
+MYENERGI_LIBBI_SERIAL=2xxxxxxx
 
 # myenergi account login — used to control charge-from-grid via the OAuth API
 MYENERGI_APP_EMAIL=you@example.com
@@ -62,6 +62,22 @@ SYNC_INTERVAL_HOURS=4
 
 # Safety switch — flip to false once you've verified the API works for your hub
 DRY_RUN=true
+
+# Property location (decimal degrees) — Open-Meteo weather for battery pre-warm
+WEATHER_LAT=
+WEATHER_LON=
+PREWARM_THRESHOLD_C=2.0
+PREWARM_LEAD_MINUTES=120
+
+# Tariff — 3-band model (defaults = Octopus Flux). Hours are end-exclusive
+# integers; off-peak must start 01:00 or later and not wrap midnight.
+TARIFF_OFFPEAK_START=2
+TARIFF_OFFPEAK_END=5
+TARIFF_PEAK_START=16
+TARIFF_PEAK_END=19
+TARIFF_OFFPEAK_P=18.0         # import prices, pence/kWh
+TARIFF_STANDARD_P=29.0
+TARIFF_PEAK_P=36.0
 ```
 
 ### Setting up OAuth credentials
