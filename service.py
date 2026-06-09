@@ -1,5 +1,5 @@
 """
-MyEnergi home energy management service.
+MyEnergi Extensions — home energy management service.
 
 Runs a Flask web server with an APScheduler background scheduler.
 - Syncs recent history from the MyEnergi hub every SYNC_INTERVAL_HOURS hours

@@ -3,14 +3,16 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MyEnergi Dashboard</title>
+  <title>MyEnergi Extensions</title>
+  <link rel="icon" type="image/png" href="https://pixelbadger.github.io/Pixelbadger.MyEnergi/avatar.png">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
 
     header { background: #1e293b; border-bottom: 1px solid #334155; padding: 1rem 1.5rem; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.75rem; }
-    header h1 { font-size: 1.25rem; font-weight: 600; color: #f1f5f9; }
+    header h1 { font-size: 1.25rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 0.6rem; }
+    header h1 img { width: 28px; height: 28px; image-rendering: pixelated; border-radius: 6px; }
     .status-bar { display: flex; gap: 1.5rem; font-size: 0.85rem; color: #94a3b8; flex-wrap: wrap; }
     .status-bar span { display: flex; align-items: center; gap: 0.4rem; }
     .status-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #64748b; }
@@ -75,7 +77,7 @@
 <body>
 
 <header>
-  <h1>MyEnergi Dashboard</h1>
+  <h1><img src="https://pixelbadger.github.io/Pixelbadger.MyEnergi/avatar.png" alt="PixelBadger" width="28" height="28">MyEnergi Extensions</h1>
   <div class="status-bar" id="statusBar">
     <span><span class="status-badge loading" id="socBadge"></span> <span id="socLabel">Loading SOC…</span></span>
     <span id="lastSyncLabel">Last sync: —</span>

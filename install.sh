@@ -154,7 +154,7 @@ mkdir -p "$UNIT_DIR"
 
 cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=MyEnergi Home Energy Service
+Description=MyEnergi Extensions
 After=network-online.target
 Wants=network-online.target
 

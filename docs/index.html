@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MyEnergi Home Energy Service</title>
+  <title>MyEnergi Extensions</title>
+  <link rel="icon" type="image/png" href="avatar.png">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -29,6 +30,17 @@
       font-weight: 700;
       color: #f1f5f9;
       letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.85rem;
+    }
+
+    header h1 img {
+      width: 52px;
+      height: 52px;
+      image-rendering: pixelated;
+      border-radius: 10px;
     }
 
     header p.tagline {
@@ -224,7 +236,7 @@
 <body>
 
 <header>
-  <h1>MyEnergi Home Energy</h1>
+  <h1><img src="avatar.png" alt="PixelBadger" width="52" height="52">MyEnergi Extensions</h1>
   <p class="tagline">Automated overnight charge management for a Libbi battery on any tariff with a cheap overnight window (defaults for Octopus Flux), with a solar forecast and web dashboard.</p>
   <div class="pills">
     <span class="pill">Libbi</span>

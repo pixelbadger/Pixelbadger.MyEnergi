@@ -1,4 +1,4 @@
-# MyEnergi Home Energy Service
+# <img src="docs/avatar.png" alt="PixelBadger" width="32" height="32" align="top"> MyEnergi Extensions
 
 Automated overnight charge management for a MyEnergi Libbi battery on a 3-band time-of-use tariff (any tariff with a cheap overnight window — defaults are configured for Octopus Flux), with a web dashboard, Solcast solar forecast integration, and weather-aware cold-battery pre-warming.
 

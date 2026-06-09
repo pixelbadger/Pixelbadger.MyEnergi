@@ -1,4 +1,4 @@
-# MyEnergi Home Energy Service
+# MyEnergi Extensions
 
 Home energy management for a Libbi battery + solar + a 3-band time-of-use tariff.
 
