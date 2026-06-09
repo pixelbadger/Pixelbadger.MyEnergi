@@ -12,19 +12,19 @@ Each night at 23:00 the service fetches tomorrow's solar forecast, compares it a
 
 ## Install
 
-1. **Configure** — copy `.env.example` to `.env` and fill in your credentials (see [Configuration](#configuration) below).
+One line — clones the repo to `~/myenergi`, installs dependencies, prompts for your credentials, and writes + enables a systemd user unit:
 
-2. **Install & enable** — installs dependencies, writes a systemd user unit, and enables it:
+```bash
+curl -fsSL https://raw.githubusercontent.com/pixelbadger/Pixelbadger.MyEnergi/master/install.sh | bash
+```
 
-   ```bash
-   bash install.sh
-   ```
+(Set `MYENERGI_INSTALL_DIR` to install somewhere other than `~/myenergi`. From an existing checkout, `bash install.sh` does the same without cloning.)
 
-3. **Start**:
+Then start it:
 
-   ```bash
-   systemctl --user start myenergi
-   ```
+```bash
+systemctl --user start myenergi
+```
 
 Dashboard → [http://localhost:5000](http://localhost:5000)
 

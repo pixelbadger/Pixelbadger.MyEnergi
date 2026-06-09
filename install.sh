@@ -1,14 +1,55 @@
 #!/usr/bin/env bash
 # install.sh — set up the myenergi service as a systemd user unit
+#
+# Run from a checkout:   bash install.sh
+# Or straight from GitHub:
+#   curl -fsSL https://raw.githubusercontent.com/pixelbadger/Pixelbadger.MyEnergi/master/install.sh | bash
+#
+# Overrides: MYENERGI_INSTALL_DIR (default ~/myenergi), MYENERGI_REPO_URL
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="${MYENERGI_REPO_URL:-https://github.com/pixelbadger/Pixelbadger.MyEnergi.git}"
+INSTALL_DIR="${MYENERGI_INSTALL_DIR:-$HOME/myenergi}"
 SERVICE_NAME="myenergi"
 UNIT_DIR="$HOME/.config/systemd/user"
 UNIT_FILE="$UNIT_DIR/$SERVICE_NAME.service"
+
+# --- 0. Locate or fetch the source -------------------------------------------
+# When piped (curl | bash) BASH_SOURCE is unset and there's no checkout to run
+# from, so clone (or update) the repo first.
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/service.py" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+    if ! command -v git >/dev/null 2>&1; then
+        echo "==> Installing git..."
+        sudo apt install -y git
+    fi
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        echo "==> Updating existing checkout in $INSTALL_DIR"
+        git -C "$INSTALL_DIR" pull --ff-only
+    elif [ -e "$INSTALL_DIR" ]; then
+        echo "ERROR: $INSTALL_DIR exists but is not a git checkout." >&2
+        echo "Set MYENERGI_INSTALL_DIR to choose a different location." >&2
+        exit 1
+    else
+        echo "==> Cloning $REPO_URL into $INSTALL_DIR"
+        git clone "$REPO_URL" "$INSTALL_DIR"
+    fi
+    SCRIPT_DIR="$INSTALL_DIR"
+fi
+
 ENV_FILE="$SCRIPT_DIR/.env"
 
 echo "==> Installing myenergi service from $SCRIPT_DIR"
+
+# When piped, stdin is the script itself — interactive prompts must come from
+# the terminal instead.
+if { exec 3</dev/tty; } 2>/dev/null; then
+    exec 3<&-
+    HAVE_TTY=1
+else
+    HAVE_TTY=0
+fi
 
 # --- 1. System Python packages ----------------------------------------------
 # We use the system Python3 directly (avoids venv pyc corruption on Android fs).
@@ -23,12 +64,21 @@ if [ -n "$MISSING" ]; then
 fi
 
 # --- 2. .env configuration --------------------------------------------------
-ask()      { local v; read  -rp "  $1: " v;          echo "$v"; }
-ask_secret(){ local v; read -rsp "  $1: " v; echo >&2; echo "$v"; }
-ask_default(){ local v; read -rp "  $1 [$2]: " v;    echo "${v:-$2}"; }
+ask()       { local v; read  -rp "  $1: " v </dev/tty;          echo "$v"; }
+ask_secret(){ local v; read -rsp "  $1: " v </dev/tty; echo >&2; echo "$v"; }
+ask_default(){ local v; read -rp "  $1 [$2]: " v </dev/tty;     echo "${v:-$2}"; }
 
-if [ -f "$ENV_FILE" ]; then
-    read -rp ".env already exists — reconfigure? [y/N] " RECONF
+if [ "$HAVE_TTY" = 0 ]; then
+    if [ -f "$ENV_FILE" ]; then
+        echo "==> No terminal available — keeping existing .env"
+        RECONF="n"
+    else
+        echo "ERROR: no terminal available to prompt for .env configuration." >&2
+        echo "Re-run interactively, or create $ENV_FILE first (see README)." >&2
+        exit 1
+    fi
+elif [ -f "$ENV_FILE" ]; then
+    read -rp ".env already exists — reconfigure? [y/N] " RECONF </dev/tty
     [[ "${RECONF,,}" == "y" ]] || RECONF="n"
 else
     RECONF="y"
@@ -119,6 +169,6 @@ echo "  Start now:     systemctl --user start $SERVICE_NAME"
 echo "  Stop:          systemctl --user stop $SERVICE_NAME"
 echo "  Status:        systemctl --user status $SERVICE_NAME"
 echo "  Live logs:     journalctl --user -u $SERVICE_NAME -f"
-echo "  Dashboard:     http://localhost:$SERVICE_PORT"
+echo "  Dashboard:     http://localhost:${SERVICE_PORT:-5000}"
 echo ""
 echo "Run 'systemctl --user start $SERVICE_NAME' to launch."
