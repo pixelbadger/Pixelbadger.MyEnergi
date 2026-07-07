@@ -12,6 +12,8 @@ Usage:
   python service.py
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import time

@@ -22,6 +22,8 @@ starting the off-peak window below full-rate temperature whenever the window
 can still deliver the required charge.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 
 import tariff

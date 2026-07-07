@@ -14,6 +14,8 @@ Usage:
   python3 fetch_history.py
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 import time

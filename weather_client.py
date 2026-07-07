@@ -8,6 +8,8 @@ hourly temperature data in local time (timezone=auto).
 Rate limits: unrestricted for reasonable usage.
 """
 
+from __future__ import annotations
+
 import requests
 
 OPEN_METEO_FORECAST_URL = "https://api.open-meteo.com/v1/forecast"

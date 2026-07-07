@@ -6,6 +6,8 @@ service.py and scheduler.py. The CLI scripts (fetch_history.py,
 fetch_weather.py) manage their own connections directly.
 """
 
+from __future__ import annotations
+
 import os
 import sqlite3
 from datetime import date

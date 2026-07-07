@@ -5,6 +5,8 @@ Extracted from fetch_history.py and forecast_charge.py to eliminate duplication.
 All existing CLI scripts import from here.
 """
 
+from __future__ import annotations
+
 import os
 import requests
 from datetime import date, timedelta

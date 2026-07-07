@@ -11,6 +11,8 @@ Required .env keys:
   MYENERGI_APP_PASSWORD  — myenergi account password
 """
 
+from __future__ import annotations
+
 import os
 import time
 import requests

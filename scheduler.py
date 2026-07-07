@@ -9,6 +9,8 @@ Three recurring jobs:
                      one-shot charge-enable before the configured off-peak window
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import time
