@@ -96,6 +96,32 @@ def get_libbi_soc(session: requests.Session, base_url: str, libbi_serial: str) -
     return float(libbi_list[0]["soc"])
 
 
+def get_libbi_live(session: requests.Session, base_url: str, libbi_serial: str) -> dict:
+    """Instantaneous Libbi readings from live status (powers in W).
+
+    batt_w is derived from the energy balance gen + grid - load:
+    positive = charging, negative = discharging.
+    """
+    r = session.get(f"{base_url}/cgi-jstatus-L", timeout=15)
+    r.raise_for_status()
+    entries = _extract_key(r.json(), "libbi")
+    if not entries:
+        raise RuntimeError("No Libbi device found in hub status response")
+    entry = next((e for e in entries if str(e.get("sno", "")) == libbi_serial), entries[0])
+    gen = float(entry.get("gen", 0) or 0)
+    grd = float(entry.get("grd", 0) or 0)
+    load = float(entry.get("div", 0) or 0)
+    return {
+        "soc": float(entry["soc"]),
+        "gen_w": gen,
+        "grd_w": grd,
+        "load_w": load,
+        "batt_w": gen + grd - load,
+        "mode": entry.get("lmo"),
+        "status": entry.get("sta"),
+    }
+
+
 def get_libbi_battery_temp(
     session: requests.Session,
     base_url: str,

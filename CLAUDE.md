@@ -91,7 +91,13 @@ decisions      (id, decided_at, for_date, soc_pct, battery_stored_kwh, battery_d
                 decision, applied, error, overnight_min_temp_c, prewarm_scheduled,
                 prewarm_lead_min, prewarm_batt_temp_c)
 hourly_weather (date, hour, temp_c)
+live_samples   (ts, serial, soc, gen_w, grd_w, load_w, batt_w, mode, status)
 ```
+
+`live_samples` is filled every `SAMPLE_INTERVAL_MINUTES` (default 5) from live `cgi-jstatus-L`
+(batt_w = gen + grid − load; >0 charging). The hub stopped serving Libbi history
+(`cgi-jdayhour`/`cgi-jday` return empty) after 2026-07-28, so this is the only source of
+battery history going forward. Daily load average falls back to hub-level `E` rows.
 
 ## Charge Decision Logic
 

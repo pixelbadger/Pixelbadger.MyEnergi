@@ -39,6 +39,8 @@ WEATHER_LON              = os.environ.get("WEATHER_LON", "").strip()
 PREWARM_THRESHOLD_C      = float(os.environ.get("PREWARM_THRESHOLD_C", "2.0"))
 PREWARM_LEAD_MINUTES     = int(os.environ.get("PREWARM_LEAD_MINUTES", "120"))
 OFFPEAK_START_HOUR       = tariff.OFFPEAK_START_HOUR
+SAMPLE_INTERVAL_MINUTES  = int(os.environ.get("SAMPLE_INTERVAL_MINUTES", "5"))
+MIN_SOC_PCT              = float(os.environ.get("MIN_SOC_PCT", "40"))
 
 _last_sync: datetime | None = None
 _last_decision: datetime | None = None
@@ -65,6 +67,7 @@ def job_sync_history(days_back: int = 7) -> None:
         conn = db.get_conn()
         db.init_schema(conn)
         total_rows = 0
+        libbi_rows: dict[str, int] = {}
         for device_type, serials in devices.items():
             for serial in serials:
                 for day in days:
@@ -78,12 +81,40 @@ def job_sync_history(days_back: int = 7) -> None:
                         ]
                         db.insert_hourly_rows(conn, rows)
                         total_rows += len(rows)
+                        if device_type == "L":
+                            libbi_rows[serial] = libbi_rows.get(serial, 0) + len(rows)
                     time.sleep(0.2)
         conn.close()
         _last_sync = datetime.now(timezone.utc)
         logger.info("sync_history: wrote %d hour-rows", total_rows)
+        for serial in devices.get("L", []):
+            if not libbi_rows.get(serial):
+                logger.warning(
+                    "sync_history: no Libbi hourly history returned for L%s in the "
+                    "last %d days; load average is falling back to hub-level data",
+                    serial, days_back,
+                )
     except Exception:
         logger.exception("sync_history failed")
+
+
+def job_sample_live() -> None:
+    """Store an instantaneous Libbi reading (SOC, solar, grid, load, battery W)."""
+    try:
+        session = client.make_session(HUB_SERIAL, API_KEY)
+        base_url = client.discover_hub_url(session)
+        conn = db.get_conn()
+        db.init_schema(conn)
+        serial = LIBBI_SERIAL or _pick_libbi_serial(conn)
+        sample = client.get_libbi_live(session, base_url, serial)
+        db.insert_live_sample(
+            conn, datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), serial, sample
+        )
+        if datetime.now().minute < SAMPLE_INTERVAL_MINUTES:
+            db.prune_live_samples(conn)
+        conn.close()
+    except Exception:
+        logger.warning("sample_live failed", exc_info=True)
 
 
 def job_nightly_decision() -> dict:
@@ -118,6 +149,17 @@ def job_nightly_decision() -> dict:
         solar_needed = (daily_load + battery_deficit) if daily_load is not None else battery_deficit
         surplus = forecast_kwh - solar_needed
         decision = "disable" if surplus >= 0 else "enable"
+        if decision == "disable" and soc < MIN_SOC_PCT:
+            # Low battery: solar can't refill it quickly (and the house keeps
+            # draining it until sunrise), so always top up at the off-peak rate.
+            logger.info(
+                "nightly_decision: SOC %.0f%% < floor %.0f%% — forcing enable "
+                "(forecast surplus was %.2f kWh)", soc, MIN_SOC_PCT, surplus,
+            )
+            decision = "enable"
+        if daily_load is None:
+            logger.warning("nightly_decision: no daily load average available — "
+                           "decision ignores house load")
 
         applied, error = libbi_control.set_libbi_charging(
             session, base_url, libbi_serial, enable=(decision == "enable")
@@ -302,6 +344,15 @@ def build_scheduler() -> BackgroundScheduler:
         id="sync_history",
         next_run_time=datetime.now(),
         misfire_grace_time=300,
+    )
+    scheduler.add_job(
+        func=job_sample_live,
+        trigger=IntervalTrigger(minutes=SAMPLE_INTERVAL_MINUTES),
+        id="sample_live",
+        next_run_time=datetime.now(),
+        misfire_grace_time=120,
+        max_instances=1,
+        coalesce=True,
     )
     scheduler.add_job(
         func=job_nightly_decision,

@@ -63,6 +63,20 @@ def init_schema(conn: sqlite3.Connection) -> None:
             temp_c REAL    NOT NULL,
             PRIMARY KEY (date, hour)
         );
+        -- Live Libbi samples (the hub no longer serves Libbi history).
+        -- Power in W; batt_w > 0 = charging, < 0 = discharging.
+        CREATE TABLE IF NOT EXISTS live_samples (
+            ts     TEXT NOT NULL,
+            serial TEXT NOT NULL,
+            soc    REAL,
+            gen_w  REAL,
+            grd_w  REAL,
+            load_w REAL,
+            batt_w REAL,
+            mode   TEXT,
+            status INTEGER,
+            PRIMARY KEY (ts, serial)
+        );
     """)
     # Migrate existing decisions table (safe to run repeatedly)
     for _col in [
@@ -84,6 +98,20 @@ def insert_hourly_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
         "INSERT OR REPLACE INTO hourly_energy VALUES (?,?,?,?,?,?,?,?)",
         rows,
     )
+    conn.commit()
+
+
+def insert_live_sample(conn: sqlite3.Connection, ts: str, serial: str, s: dict) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO live_samples VALUES (?,?,?,?,?,?,?,?,?)",
+        (ts, serial, s["soc"], s["gen_w"], s["grd_w"], s["load_w"],
+         s["batt_w"], s["mode"], s["status"]),
+    )
+    conn.commit()
+
+
+def prune_live_samples(conn: sqlite3.Connection, keep_days: int = 400) -> None:
+    conn.execute("DELETE FROM live_samples WHERE ts < datetime('now', ?)", (f"-{keep_days} days",))
     conn.commit()
 
 
@@ -284,22 +312,29 @@ def get_historical_gen_avg_kwh(
 def get_avg_daily_load_kwh(
     conn: sqlite3.Connection, serial: str, days: int = 90
 ) -> float | None:
-    """Average daily load (kWh) for the Libbi over the past N days."""
-    row = conn.execute(
-        """
+    """Average daily load (kWh) over the past N days.
+
+    Uses the Libbi's own history. The hub stopped returning Libbi hourly
+    history after 2026-07-28, so if that yields nothing we fall back to the
+    hub-level (Eddi 'E') rows, which carry the same grid import/export and
+    generation figures and are still being populated.
+    """
+    sql = """
         SELECT AVG(daily_load) FROM (
             SELECT date, SUM(imp_kwh + gen_kwh - exp_kwh) AS daily_load
             FROM   hourly_energy
-            WHERE  device_type = 'L'
-              AND  serial      = :serial
+            WHERE  device_type = :dtype
+              AND  (:serial = '' OR :dtype != 'L' OR serial = :serial)
               AND  date        >= date('now', :window)
               AND  date        <  date('now')
             GROUP  BY date
             HAVING COUNT(*) >= 12
         )
-        """,
-        {"serial": serial, "window": f"-{days} days"},
-    ).fetchone()
-    if row is None:
-        return None
-    return row[0]
+    """
+    for dtype in ("L", "E"):
+        row = conn.execute(
+            sql, {"dtype": dtype, "serial": serial or "", "window": f"-{days} days"}
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            return row[0]
+    return None

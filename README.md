@@ -24,6 +24,8 @@ surplus         = tomorrow_forecast_kwh − solar_needed
 
 surplus ≥ 0  →  disable mains charging  (solar will cover it)
 surplus < 0  →  enable mains charging   (shortfall of |surplus| kWh)
+
+SOC < MIN_SOC_PCT (default 40)  →  always enable, whatever the forecast says
 ```
 
 The charge-from-grid flag is a cloud-managed setting that the local hub API cannot change, so it's set via the myenergi OAuth (Cognito) API — the same path the myenergi app uses. The Libbi is always reset to Normal mode first so house discharge is never blocked.
