@@ -273,10 +273,22 @@ def job_prewarm_plan() -> dict:
 
         session = client.make_session(HUB_SERIAL, API_KEY)
         base_url = client.discover_hub_url(session)
-        batt_temp = client.get_libbi_battery_temp(session, base_url, LIBBI_SERIAL)
+        try:
+            batt_temp = client.get_libbi_battery_temp(session, base_url, LIBBI_SERIAL)
+        except Exception:
+            logger.warning("prewarm_plan: battery temp request failed", exc_info=True)
+            batt_temp = None
+        temp_source = "sensor"
         if batt_temp is None:
-            # Fall back to forecast ambient as a conservative cell-temp proxy
+            # The hub has stopped serving Libbi minute data, so estimate the
+            # cell temperature from the last 24h of outdoor temperature.
+            batt_temp = prewarm_model.estimate_cell_temp(
+                db.get_ambient_series(conn, datetime.now())
+            )
+            temp_source = "estimated"
+        if batt_temp is None:
             batt_temp = ambient_min
+            temp_source = "forecast_min"
         if batt_temp is None:
             conn.close()
             logger.warning("prewarm_plan: no battery or ambient temperature — skipping")
@@ -301,6 +313,7 @@ def job_prewarm_plan() -> dict:
         )
         plan.update({
             "batt_temp_c": batt_temp,
+            "temp_source": temp_source,
             "soc_pct": soc,
             "e_req_kwh": round(e_req, 2),
             "overnight_min_temp_c": ambient_min,

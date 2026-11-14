@@ -46,6 +46,24 @@ HEATER_CUTOFF_C       = 14.0
 OFFPEAK_DURATION_MIN  = tariff.OFFPEAK_DURATION_MIN
 
 
+def estimate_cell_temp(ambient_series: list[float]) -> float | None:
+    """Estimate current cell temperature when no sensor reading is available.
+
+    `ambient_series` is hourly outdoor temperature, oldest first, ending at
+    the current hour. The pack is assumed to start at the first value and
+    drift toward ambient by at most COOL_IDLE_C_PER_H each hour (same rate
+    heating up as cooling down), so it lags the daily swing instead of
+    tracking the overnight minimum.
+    """
+    if not ambient_series:
+        return None
+    t = ambient_series[0]
+    for amb in ambient_series[1:]:
+        step = max(-COOL_IDLE_C_PER_H, min(COOL_IDLE_C_PER_H, amb - t))
+        t += step
+    return t
+
+
 def p_cap_w(temp_c: float) -> float:
     """Interpolated charge power cap (W) at a given battery cell temp."""
     if temp_c <= P_CAP_CURVE[0][0]:

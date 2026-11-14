@@ -110,6 +110,11 @@ surplus >= 0  → disable mains charging (solar will cover it)
 surplus < 0   → enable mains charging  (shortfall of |surplus| kWh)
 ```
 
+Note: the hub stopped serving Libbi minute data after 2026-07-28, so the cell-temp reading
+returns nothing. `job_prewarm_plan` then uses `prewarm_model.estimate_cell_temp()` (last 24h of
+outdoor temp, pack drifting toward ambient at ≤1°C/h) and reports `temp_source`
+(`sensor` / `estimated` / `forecast_min`) in the plan log.
+
 ## Pre-warm Model (calibrated winter 2025-26, 8 nights of minute data)
 
 The Libbi BMS caps charge power by battery cell temperature: ~127 W at 1-2°C

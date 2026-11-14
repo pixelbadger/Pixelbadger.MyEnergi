@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timedelta
 
 import tariff
 
@@ -122,6 +122,25 @@ def insert_weather_rows(conn: sqlite3.Connection, rows: list[tuple]) -> None:
         rows,
     )
     conn.commit()
+
+
+def get_ambient_series(
+    conn: sqlite3.Connection, end: datetime, hours: int = 24
+) -> list[float]:
+    """Hourly outdoor temperatures (oldest first) for the `hours` hours up to
+    and including end's hour. Hours missing from hourly_weather are skipped."""
+    end = end.replace(minute=0, second=0, microsecond=0)
+    keys = [end - timedelta(hours=h) for h in range(hours, -1, -1)]
+    rows = conn.execute(
+        "SELECT date, hour, temp_c FROM hourly_weather WHERE date IN (?, ?)",
+        (keys[0].date().isoformat(), keys[-1].date().isoformat()),
+    ).fetchall()
+    by_key = {(r[0], r[1]): r[2] for r in rows}
+    return [
+        by_key[(k.date().isoformat(), k.hour)]
+        for k in keys
+        if (k.date().isoformat(), k.hour) in by_key
+    ]
 
 
 def get_overnight_min_temp(conn: sqlite3.Connection, for_date: str) -> float | None:
