@@ -328,16 +328,51 @@ def get_historical_gen_avg_kwh(
     return row[0] if row else None
 
 
+# A day counts as covered by live samples when it has at least this many
+# (5-minute sampling gives 288/day, so ~70%), and live data is only trusted
+# once there are this many covered days.
+LIVE_MIN_SAMPLES_PER_DAY = 200
+LIVE_MIN_DAYS = 3
+
+
 def get_avg_daily_load_kwh(
     conn: sqlite3.Connection, serial: str, days: int = 90
 ) -> float | None:
-    """Average daily load (kWh) over the past N days.
+    """Average daily load (kWh) over the past N days (value only)."""
+    return get_avg_daily_load(conn, serial, days)[0]
 
-    Uses the Libbi's own history. The hub stopped returning Libbi hourly
-    history after 2026-07-28, so if that yields nothing we fall back to the
-    hub-level (Eddi 'E') rows, which carry the same grid import/export and
-    generation figures and are still being populated.
+
+def get_avg_daily_load(
+    conn: sqlite3.Connection, serial: str, days: int = 90
+) -> tuple[float | None, str]:
+    """Average daily load (kWh) and where it came from.
+
+    Preferred source is live_samples: mean internal-load power x 24h, over
+    complete local days with enough samples. This is true house consumption
+    (battery charging excluded). Until there are LIVE_MIN_DAYS such days, falls
+    back to the hourly history. The hub stopped returning Libbi hourly history
+    after 2026-07-28, so that is the hub-level (Eddi 'E') rows, whose
+    imp + gen - exp also includes net battery charging.
     """
+    row = conn.execute(
+        """
+        SELECT COUNT(*), AVG(day_kwh) FROM (
+            SELECT date(ts, 'localtime') AS d, AVG(load_w) * 24 / 1000.0 AS day_kwh
+            FROM   live_samples
+            WHERE  load_w IS NOT NULL
+              AND  (:serial = '' OR serial = :serial)
+              AND  date(ts, 'localtime') >= date('now', 'localtime', :window)
+              AND  date(ts, 'localtime') <  date('now', 'localtime')
+            GROUP  BY d
+            HAVING COUNT(*) >= :min_samples
+        )
+        """,
+        {"serial": serial or "", "window": f"-{days} days",
+         "min_samples": LIVE_MIN_SAMPLES_PER_DAY},
+    ).fetchone()
+    if row is not None and row[0] >= LIVE_MIN_DAYS and row[1] is not None:
+        return row[1], f"live ({row[0]} days)"
+
     sql = """
         SELECT AVG(daily_load) FROM (
             SELECT date, SUM(imp_kwh + gen_kwh - exp_kwh) AS daily_load
@@ -351,9 +386,9 @@ def get_avg_daily_load_kwh(
         )
     """
     for dtype in ("L", "E"):
-        row = conn.execute(
+        r = conn.execute(
             sql, {"dtype": dtype, "serial": serial or "", "window": f"-{days} days"}
         ).fetchone()
-        if row is not None and row[0] is not None:
-            return row[0]
-    return None
+        if r is not None and r[0] is not None:
+            return r[0], f"hourly-{dtype}"
+    return None, "none"

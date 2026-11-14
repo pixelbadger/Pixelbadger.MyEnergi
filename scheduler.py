@@ -142,7 +142,9 @@ def job_nightly_decision() -> dict:
 
         conn = db.get_conn()
         libbi_serial = LIBBI_SERIAL or _pick_libbi_serial(conn)
-        daily_load = db.get_avg_daily_load_kwh(conn, libbi_serial)
+        daily_load, load_source = db.get_avg_daily_load(conn, libbi_serial)
+        logger.info("nightly_decision: daily load %s kWh (source: %s)",
+                    f"{daily_load:.1f}" if daily_load is not None else None, load_source)
 
         battery_stored = LIBBI_CAP * (soc / 100.0)
         battery_deficit = LIBBI_CAP - battery_stored

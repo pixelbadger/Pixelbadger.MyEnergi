@@ -97,7 +97,8 @@ live_samples   (ts, serial, soc, gen_w, grd_w, load_w, batt_w, mode, status)
 `live_samples` is filled every `SAMPLE_INTERVAL_MINUTES` (default 5) from live `cgi-jstatus-L`
 (batt_w = gen + grid − load; >0 charging). The hub stopped serving Libbi history
 (`cgi-jdayhour`/`cgi-jday` return empty) after 2026-07-28, so this is the only source of
-battery history going forward. Daily load average falls back to hub-level `E` rows.
+battery history going forward. The daily load average prefers `live_samples` (mean `load_w` × 24h over complete days with ≥200
+samples, once ≥3 such days exist) and otherwise falls back to hub-level `E` rows.
 
 ## Charge Decision Logic
 
