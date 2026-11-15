@@ -121,7 +121,7 @@ def main():
                     continue
                 records = fetch_day_hourly(SESSION, base_url, device_type, serial, day)
                 if records:
-                    parsed = [parse_record(r) for r in records]
+                    parsed = [parse_record(r, device_type) for r in records]
                     insert_day(conn, day, device_type, serial, parsed)
                     fetched += 1
                     total_fetched += 1

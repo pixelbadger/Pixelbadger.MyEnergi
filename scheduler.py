@@ -73,7 +73,7 @@ def job_sync_history(days_back: int = 7) -> None:
                 for day in days:
                     records = client.fetch_day_hourly(session, base_url, device_type, serial, day)
                     if records:
-                        parsed = [client.parse_record(r) for r in records]
+                        parsed = [client.parse_record(r, device_type) for r in records]
                         rows = [
                             (day.isoformat(), r["hour"], device_type, serial,
                              r["imp_kwh"], r["exp_kwh"], r["gen_kwh"], r["soc_pct"])

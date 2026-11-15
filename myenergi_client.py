@@ -169,14 +169,18 @@ def fetch_day_hourly(
     return records
 
 
-def parse_record(rec: dict) -> dict:
-    """Normalise a raw API hour record to kWh floats."""
+def parse_record(rec: dict, device_type: str = "") -> dict:
+    """Normalise a raw API hour record to kWh floats.
+
+    The hub omits zero-valued fields, so a Libbi record without soc1 means 0%.
+    """
+    default_soc = 0 if device_type == "L" else None
     return {
         "hour": int(rec.get("hr", 0)),
         "imp_kwh": rec.get("imp", 0) * JOULES_TO_KWH,
         "exp_kwh": rec.get("exp", 0) * JOULES_TO_KWH,
         "gen_kwh": rec.get("gep", rec.get("gen", 0)) * JOULES_TO_KWH,
-        "soc_pct": rec.get("soc1", rec.get("soc")),
+        "soc_pct": rec.get("soc1", rec.get("soc", default_soc)),
     }
 
 
