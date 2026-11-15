@@ -176,7 +176,7 @@ def parse_record(rec: dict) -> dict:
         "imp_kwh": rec.get("imp", 0) * JOULES_TO_KWH,
         "exp_kwh": rec.get("exp", 0) * JOULES_TO_KWH,
         "gen_kwh": rec.get("gep", rec.get("gen", 0)) * JOULES_TO_KWH,
-        "soc_pct": rec.get("soc", None),
+        "soc_pct": rec.get("soc1", rec.get("soc")),
     }
 
 
