@@ -77,6 +77,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
             status INTEGER,
             PRIMARY KEY (ts, serial)
         );
+        -- Active alerts, so each problem is emailed once on onset and once on recovery.
+        CREATE TABLE IF NOT EXISTS alert_state (
+            name   TEXT PRIMARY KEY,
+            since  TEXT NOT NULL,
+            detail TEXT
+        );
     """)
     # Migrate existing decisions table (safe to run repeatedly)
     for _col in [
@@ -112,6 +118,20 @@ def insert_live_sample(conn: sqlite3.Connection, ts: str, serial: str, s: dict) 
 
 def prune_live_samples(conn: sqlite3.Connection, keep_days: int = 400) -> None:
     conn.execute("DELETE FROM live_samples WHERE ts < datetime('now', ?)", (f"-{keep_days} days",))
+    conn.commit()
+
+
+def get_alert(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM alert_state WHERE name = ?", (name,)).fetchone()
+
+
+def set_alert(conn: sqlite3.Connection, name: str, since: str, detail: str) -> None:
+    conn.execute("INSERT OR REPLACE INTO alert_state VALUES (?,?,?)", (name, since, detail))
+    conn.commit()
+
+
+def clear_alert(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute("DELETE FROM alert_state WHERE name = ?", (name,))
     conn.commit()
 
 

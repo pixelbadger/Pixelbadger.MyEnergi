@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import requests
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from requests.auth import HTTPDigestAuth
 
 JOULES_TO_KWH = 1 / 3_600_000
@@ -142,6 +142,36 @@ def get_libbi_battery_temp(
         if rec.get("batt") is not None:
             return float(rec["batt"])
     return None
+
+
+def get_libbi_clock(session: requests.Session, base_url: str, libbi_serial: str) -> datetime | None:
+    """The Libbi's reported date/time from live status (`dat` DD-MM-YYYY, `tim` HH:MM:SS)."""
+    r = session.get(f"{base_url}/cgi-jstatus-L", timeout=15)
+    r.raise_for_status()
+    entries = _extract_key(r.json(), "libbi")
+    entry = next((e for e in entries if str(e.get("sno", "")) == libbi_serial), None)
+    if not entry or not entry.get("dat") or not entry.get("tim"):
+        return None
+    return datetime.strptime(f"{entry['dat']} {entry['tim']}", "%d-%m-%Y %H:%M:%S")
+
+
+def get_libbi_last_history_time(
+    session: requests.Session, base_url: str, libbi_serial: str
+) -> datetime | None:
+    """Timestamp of the newest minute record the hub holds for the Libbi today.
+
+    The hub stops recording Libbi history when the Libbi's clock drifts, so a
+    stale (or missing) latest record is the symptom to watch for.
+    """
+    today = date.today()
+    url = f"{base_url}/cgi-jday-L{libbi_serial}-{today.year}-{today.month}-{today.day}"
+    r = session.get(url, timeout=30)
+    r.raise_for_status()
+    records = r.json().get(f"U{libbi_serial}", [])
+    if not records:
+        return None
+    last = records[-1]  # zero-valued hr/min are omitted by the hub
+    return datetime(today.year, today.month, today.day, int(last.get("hr", 0)), int(last.get("min", 0)))
 
 
 def fetch_day_hourly(

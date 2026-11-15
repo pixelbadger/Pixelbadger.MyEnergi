@@ -1,8 +1,11 @@
 """
 APScheduler job definitions for the MyEnergi service.
 
-Three recurring jobs:
+Recurring jobs:
   sync_history     — fetches the last 7 days of hourly data from the hub
+  sample_live      — stores an instantaneous Libbi reading every few minutes
+  check_libbi_clock — emails an alert when the Libbi's clock drifts or the hub
+                     stops recording its history (and again on recovery)
   nightly_decision — runs at 23:00 to decide whether to enable overnight charging
   prewarm_plan     — runs at 00:10 to pick a cost-optimal pre-warm start time
                      from the actual battery cell temperature, then schedules a
@@ -23,6 +26,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 import db
 import libbi_control
 import myenergi_client as client
+import notify
 import prewarm_model
 import tariff
 import weather_client
@@ -41,6 +45,9 @@ PREWARM_LEAD_MINUTES     = int(os.environ.get("PREWARM_LEAD_MINUTES", "120"))
 OFFPEAK_START_HOUR       = tariff.OFFPEAK_START_HOUR
 SAMPLE_INTERVAL_MINUTES  = int(os.environ.get("SAMPLE_INTERVAL_MINUTES", "5"))
 MIN_SOC_PCT              = float(os.environ.get("MIN_SOC_PCT", "40"))
+CLOCK_CHECK_INTERVAL_MINUTES = int(os.environ.get("CLOCK_CHECK_INTERVAL_MINUTES", "15"))
+CLOCK_MAX_DRIFT_MINUTES  = float(os.environ.get("CLOCK_MAX_DRIFT_MINUTES", "10"))
+HISTORY_MAX_AGE_MINUTES  = float(os.environ.get("HISTORY_MAX_AGE_MINUTES", "60"))
 
 _last_sync: datetime | None = None
 _last_decision: datetime | None = None
@@ -115,6 +122,73 @@ def job_sample_live() -> None:
         conn.close()
     except Exception:
         logger.warning("sample_live failed", exc_info=True)
+
+
+def _minutes_from_now(t: datetime) -> float:
+    """Minutes between t and now. The hub's timezone convention is unclear, so
+    take whichever of local time and UTC t is closer to."""
+    now_local = datetime.now()
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    return min(abs((t - now_local).total_seconds()), abs((t - now_utc).total_seconds())) / 60
+
+
+def job_check_libbi_clock() -> None:
+    """Alert when the Libbi's clock drifts or the hub stops recording its history.
+
+    A drifted Libbi clock silently stops the hub storing Libbi history
+    (summer 2024, 2025 and 2026 were each lost for 1-4 months) while live
+    status keeps working, so the history freshness check is the one that
+    catches the real symptom; the clock check names the likely cause.
+    """
+    try:
+        session = client.make_session(HUB_SERIAL, API_KEY)
+        base_url = client.discover_hub_url(session)
+        conn = db.get_conn()
+        db.init_schema(conn)
+        serial = LIBBI_SERIAL or _pick_libbi_serial(conn)
+        clock = client.get_libbi_clock(session, base_url, serial)
+        last_record = client.get_libbi_last_history_time(session, base_url, serial)
+    except Exception:
+        logger.warning("check_libbi_clock failed", exc_info=True)
+        return
+
+    problems = []
+    if clock is None:
+        problems.append("Live status has no Libbi date/time.")
+    elif _minutes_from_now(clock) > CLOCK_MAX_DRIFT_MINUTES:
+        problems.append(
+            f"Libbi clock reads {clock:%Y-%m-%d %H:%M:%S}, "
+            f"{_minutes_from_now(clock):.0f} min away from real time."
+        )
+    # Today's minute file starts empty at midnight; allow for that (and BST).
+    if datetime.now().hour >= 2:
+        if last_record is None:
+            problems.append("The hub holds no Libbi minute history for today.")
+        elif _minutes_from_now(last_record) > HISTORY_MAX_AGE_MINUTES:
+            problems.append(
+                f"Newest Libbi history record is {last_record:%H:%M}, "
+                f"{_minutes_from_now(last_record):.0f} min old."
+            )
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    active = db.get_alert(conn, "libbi_clock")
+    if problems:
+        detail = "\n".join(problems)
+        logger.warning("check_libbi_clock: %s", detail.replace("\n", " "))
+        if active is None and notify.send_alert(
+            "Libbi clock / history problem",
+            f"{detail}\n\nThe hub drops Libbi history while its clock is wrong. "
+            "Check the date and time on the Libbi and correct it if needed.",
+        ):
+            db.set_alert(conn, "libbi_clock", now, detail)
+    elif active is not None:
+        logger.info("check_libbi_clock: recovered (alert active since %s)", active["since"])
+        if notify.send_alert(
+            "Libbi clock / history recovered",
+            f"Libbi clock and history look healthy again (problem since {active['since']}).",
+        ):
+            db.clear_alert(conn, "libbi_clock")
+    conn.close()
 
 
 def job_nightly_decision() -> dict:
@@ -368,6 +442,14 @@ def build_scheduler() -> BackgroundScheduler:
         misfire_grace_time=120,
         max_instances=1,
         coalesce=True,
+    )
+    scheduler.add_job(
+        func=job_check_libbi_clock,
+        trigger=IntervalTrigger(minutes=CLOCK_CHECK_INTERVAL_MINUTES),
+        id="check_libbi_clock",
+        next_run_time=datetime.now() + timedelta(minutes=1),
+        misfire_grace_time=300,
+        max_instances=1,
     )
     scheduler.add_job(
         func=job_nightly_decision,
