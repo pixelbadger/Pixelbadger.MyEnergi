@@ -472,19 +472,24 @@ def get_avg_daily_load(
 ) -> tuple[float | None, str]:
     """Average daily load (kWh) and where it came from.
 
-    Preferred source is live_samples: mean internal-load power x 24h, over
-    complete local days with enough samples. This is true house consumption
-    (battery charging excluded). Until there are LIVE_MIN_DAYS such days, falls
-    back to the hourly history. The hub stopped returning Libbi hourly history
-    after 2026-07-28, so that is the hub-level (Eddi 'E') rows, whose
-    imp + gen - exp also includes net battery charging.
+    Off-peak hours are excluded: load there is bought from the grid at the
+    cheap rate whatever the battery does (e.g. a tumble drier deliberately run
+    overnight), so it isn't load that solar or stored charge must cover.
+
+    Preferred source is live_samples: mean house-load power x the non-off-peak
+    hours, over complete local days with enough samples. This is true house
+    consumption (battery charging excluded). Until there are LIVE_MIN_DAYS such days, falls
+    back to the hourly history: Libbi 'L' rows, else hub-level (Eddi 'E') rows,
+    whose imp + gen - exp also includes net battery charging.
     """
+    hours = 24 - len(tariff.OFFPEAK_HOURS)
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(*), AVG(day_kwh) FROM (
-            SELECT date(ts, 'localtime') AS d, AVG(load_w) * 24 / 1000.0 AS day_kwh
+            SELECT date(ts, 'localtime') AS d, AVG(load_w) * :hours / 1000.0 AS day_kwh
             FROM   live_samples
             WHERE  load_w IS NOT NULL
+              AND  CAST(strftime('%H', ts, 'localtime') AS INTEGER) NOT IN ({_OFFPEAK_HOURS_SQL})
               AND  (:serial = '' OR serial = :serial)
               AND  date(ts, 'localtime') >= date('now', 'localtime', :window)
               AND  date(ts, 'localtime') <  date('now', 'localtime')
@@ -492,27 +497,29 @@ def get_avg_daily_load(
             HAVING COUNT(*) >= :min_samples
         )
         """,
-        {"serial": serial or "", "window": f"-{days} days",
-         "min_samples": LIVE_MIN_SAMPLES_PER_DAY},
+        {"serial": serial or "", "window": f"-{days} days", "hours": hours,
+         "min_samples": LIVE_MIN_SAMPLES_PER_DAY * hours / 24},
     ).fetchone()
     if row is not None and row[0] >= LIVE_MIN_DAYS and row[1] is not None:
         return row[1], f"live ({row[0]} days)"
 
-    sql = """
+    sql = f"""
         SELECT AVG(daily_load) FROM (
             SELECT date, SUM(imp_kwh + gen_kwh - exp_kwh) AS daily_load
             FROM   hourly_energy
             WHERE  device_type = :dtype
+              AND  hour NOT IN ({_OFFPEAK_HOURS_SQL})
               AND  (:serial = '' OR :dtype != 'L' OR serial = :serial)
               AND  date        >= date('now', :window)
               AND  date        <  date('now')
             GROUP  BY date
-            HAVING COUNT(*) >= 12
+            HAVING COUNT(*) >= :min_hours
         )
     """
     for dtype in ("L", "E"):
         r = conn.execute(
-            sql, {"dtype": dtype, "serial": serial or "", "window": f"-{days} days"}
+            sql, {"dtype": dtype, "serial": serial or "", "window": f"-{days} days",
+                  "min_hours": 12 * hours / 24}
         ).fetchone()
         if r is not None and r[0] is not None:
             return r[0], f"hourly-{dtype}"

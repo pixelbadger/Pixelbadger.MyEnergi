@@ -102,8 +102,11 @@ charge_window_minutes (for_date, minute, batt_temp_c, ambt_c, charge_w, imp_w, s
 (batt_w = Libbi `div`, >0 charging — despite its "Internal Load" CT label `div` is battery
 power; load_w = gen + grid − batt_w). Rows before 2026-11-17 had the two swapped and were
 corrected in place. The hub stopped serving Libbi history (`cgi-jdayhour`/`cgi-jday`) from
-2026-07-28 to 2026-11-15 (Libbi clock drift); live samples cover such gaps. The daily load average prefers `live_samples` (mean `load_w` × 24h over complete days with ≥200
-samples, once ≥3 such days exist) and otherwise falls back to hub-level `E` rows.
+2026-07-28 to 2026-11-15 (Libbi clock drift); live samples cover such gaps. The daily load average prefers `live_samples` (mean `load_w` × the non-off-peak hours over
+complete days with enough samples, once ≥3 such days exist) and otherwise falls back to
+hourly `L`, then `E`, rows. Off-peak hours are excluded throughout: load there is bought at
+the cheap rate regardless (the household runs the tumble drier then), so solar/battery
+needn't cover it.
 
 ## Charge Decision Logic
 
