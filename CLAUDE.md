@@ -16,7 +16,7 @@ Home energy management for a Libbi battery + solar + a 3-band time-of-use tariff
 | `myenergi_client.py` | MyEnergi hub (digest auth), Solcast and Cognito API client |
 | `db.py` | SQLite helpers (hourly_energy + decisions + hourly_weather tables) |
 | `tariff.py` | Shared tariff + battery config from `.env` (windows, prices, capacity) — validates at import |
-| `scheduler.py` | Background jobs: sync history (interval), nightly charge decision (23:00), pre-warm planning (00:10) |
+| `scheduler.py` | Background jobs: sync history (interval), nightly charge decision (23:00), pre-warm planning (00:10), charge-window summary (off-peak end + 5 min) |
 | `libbi_control.py` | Libbi charging enable/disable — DRY_RUN=true by default |
 | `prewarm_model.py` | Calibrated battery thermal model + cost-optimal pre-warm lead solver |
 | `weather_client.py` | Open-Meteo API client (no auth — forecast + archive) |
@@ -92,12 +92,17 @@ decisions      (id, decided_at, for_date, soc_pct, battery_stored_kwh, battery_d
                 prewarm_lead_min, prewarm_batt_temp_c)
 hourly_weather (date, hour, temp_c)
 live_samples   (ts, serial, soc, gen_w, grd_w, load_w, batt_w, mode, status)
+charge_windows (for_date, decision, plan_* (00:10 predictions), source, charge_from_grid,
+                start/end/max_soc_pct, start/end/max_batt_temp_c, pre_window_kwh,
+                window_kwh, grid_import_kwh, minutes_to_full_rate, minute_count)
+charge_window_minutes (for_date, minute, batt_temp_c, ambt_c, charge_w, imp_w, soc_pct)
 ```
 
 `live_samples` is filled every `SAMPLE_INTERVAL_MINUTES` (default 5) from live `cgi-jstatus-L`
-(batt_w = gen + grid − load; >0 charging). The hub stopped serving Libbi history
-(`cgi-jdayhour`/`cgi-jday` return empty) after 2026-07-28, so this is the only source of
-battery history going forward. The daily load average prefers `live_samples` (mean `load_w` × 24h over complete days with ≥200
+(batt_w = Libbi `div`, >0 charging — despite its "Internal Load" CT label `div` is battery
+power; load_w = gen + grid − batt_w). Rows before 2026-11-17 had the two swapped and were
+corrected in place. The hub stopped serving Libbi history (`cgi-jdayhour`/`cgi-jday`) from
+2026-07-28 to 2026-11-15 (Libbi clock drift); live samples cover such gaps. The daily load average prefers `live_samples` (mean `load_w` × 24h over complete days with ≥200
 samples, once ≥3 such days exist) and otherwise falls back to hub-level `E` rows.
 
 ## Charge Decision Logic
@@ -133,3 +138,8 @@ starts the window *below* full-rate temp — e.g. lead 10 min at 1°C, 35 min
 at −5°C, 0 at ≥5°C or when half-full. A one-shot enable fires at off-peak
 start − lead. Planned lead and cell temp are logged to `decisions` for
 recalibration.
+
+At off-peak end + 5 min `job_charge_window_summary` records the outcome in
+`charge_windows` (alongside the 00:10 plan's predictions) and keeps the minute
+trace (lead-up + window) in `charge_window_minutes`; `/api/charge-windows` serves it.
+It falls back to `live_samples` when the hub has no minute data.

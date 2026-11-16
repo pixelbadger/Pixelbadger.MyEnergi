@@ -10,6 +10,9 @@ Recurring jobs:
   prewarm_plan     — runs at 00:10 to pick a cost-optimal pre-warm start time
                      from the actual battery cell temperature, then schedules a
                      one-shot charge-enable before the configured off-peak window
+  charge_window_summary — runs just after the off-peak window ends and records
+                     what the battery actually did (SOC, cell temp, energy,
+                     minutes to full charge rate) against the plan
 """
 
 from __future__ import annotations
@@ -43,6 +46,9 @@ WEATHER_LON              = os.environ.get("WEATHER_LON", "").strip()
 PREWARM_THRESHOLD_C      = float(os.environ.get("PREWARM_THRESHOLD_C", "2.0"))
 PREWARM_LEAD_MINUTES     = int(os.environ.get("PREWARM_LEAD_MINUTES", "120"))
 OFFPEAK_START_HOUR       = tariff.OFFPEAK_START_HOUR
+OFFPEAK_END_HOUR         = tariff.OFFPEAK_END_HOUR
+# Charge power counted as "full rate" when measuring heater warm-up time.
+FULL_RATE_W              = 0.9 * prewarm_model.P_CAP_CURVE[-1][1]
 SAMPLE_INTERVAL_MINUTES  = int(os.environ.get("SAMPLE_INTERVAL_MINUTES", "5"))
 MIN_SOC_PCT              = float(os.environ.get("MIN_SOC_PCT", "40"))
 CLOCK_CHECK_INTERVAL_MINUTES = int(os.environ.get("CLOCK_CHECK_INTERVAL_MINUTES", "15"))
@@ -396,6 +402,20 @@ def job_prewarm_plan() -> dict:
         })
 
         db.update_decision_prewarm(conn, decision_rec["id"], plan["lead_min"], batt_temp)
+        try:
+            db.upsert_charge_window(conn, today, {
+                "decision": decision_rec["decision"],
+                "plan_soc_pct": soc,
+                "plan_batt_temp_c": batt_temp,
+                "plan_temp_source": temp_source,
+                "plan_lead_min": plan["lead_min"],
+                "plan_e_req_kwh": round(e_req, 3),
+                "plan_window_kwh": plan.get("e_window_kwh"),
+                "plan_shortfall_kwh": plan.get("shortfall_kwh"),
+                "plan_temp_at_start_c": plan.get("temp_at_start_c"),
+            })
+        except Exception:
+            logger.warning("prewarm_plan: could not record plan in charge_windows", exc_info=True)
         conn.close()
 
         if plan["lead_min"] <= 0:
@@ -423,6 +443,121 @@ def job_prewarm_plan() -> dict:
 
 # Manual dashboard trigger runs the same planning logic
 job_prewarm = job_prewarm_plan
+
+
+def _summarise_minutes(records: list[dict], for_date: str) -> tuple[dict, list[tuple]] | None:
+    """Window stats + minute trace from hub minute records (energies in J/min).
+
+    Covers the lead-up (up to PREWARM_LEAD_MINUTES before off-peak start) and
+    the off-peak window itself.
+    """
+    start_min = OFFPEAK_START_HOUR * 60
+    end_min = OFFPEAK_END_HOUR * 60
+    lead_from = max(0, start_min - PREWARM_LEAD_MINUTES)
+    trace = []
+    for rec in records:
+        t = int(rec.get("hr", 0)) * 60 + int(rec.get("min", 0))
+        if lead_from <= t < end_min:
+            trace.append((t, rec))
+    window = [(t, r) for t, r in trace if t >= start_min]
+    if not window:
+        return None
+
+    def temp(r):
+        return float(r["batt"]) if r.get("batt") is not None else None
+
+    def charge_w(r):
+        return float(r.get("bcp1", 0) or 0) / 60
+
+    temps = [temp(r) for _, r in window if temp(r) is not None]
+    full = next((t - start_min for t, r in window if charge_w(r) >= FULL_RATE_W), None)
+    stats = {
+        "source": "minute",
+        "start_soc_pct": window[0][1].get("soc1", 0),
+        "end_soc_pct": window[-1][1].get("soc1", 0),
+        "max_soc_pct": max(r.get("soc1", 0) for _, r in window),
+        "start_batt_temp_c": temp(window[0][1]),
+        "end_batt_temp_c": temp(window[-1][1]),
+        "max_batt_temp_c": max(temps) if temps else None,
+        "pre_window_kwh": round(sum(float(r.get("bcp1", 0) or 0)
+                                    for t, r in trace if t < start_min) / 3.6e6, 3),
+        "window_kwh": round(sum(float(r.get("bcp1", 0) or 0) for _, r in window) / 3.6e6, 3),
+        "grid_import_kwh": round(sum(float(r.get("imp", 0) or 0) for _, r in window) / 3.6e6, 3),
+        "minutes_to_full_rate": full,
+        "minute_count": len(window),
+    }
+    rows = [
+        (for_date, f"{t // 60:02d}:{t % 60:02d}", temp(r),
+         float(r["ambt"]) if r.get("ambt") is not None else None,
+         charge_w(r), float(r.get("imp", 0) or 0) / 60, r.get("soc1", 0))
+        for t, r in trace
+    ]
+    return stats, rows
+
+
+def _read_charge_from_grid(serial: str) -> int | None:
+    email = os.environ.get("MYENERGI_APP_EMAIL", "")
+    password = os.environ.get("MYENERGI_APP_PASSWORD", "")
+    if not email or not password:
+        return None
+    try:
+        token = libbi_control._get_token(email, password)
+        return 1 if client.get_charge_from_grid(token, serial) else 0
+    except Exception:
+        logger.warning("charge_window_summary: charge-from-grid readback failed", exc_info=True)
+        return None
+
+
+def job_charge_window_summary() -> dict:
+    """Record what happened in tonight's off-peak window, for recalibration.
+
+    Runs a few minutes after the window ends. Prefers the hub's minute data
+    (cell temp + per-minute charge energy); falls back to live_samples when
+    the hub has stopped serving Libbi history.
+    """
+    logger.info("charge_window_summary: starting")
+    try:
+        today = date.today()
+        for_date = today.isoformat()
+        conn = db.get_conn()
+        db.init_schema(conn)
+        serial = LIBBI_SERIAL or _pick_libbi_serial(conn)
+        decision_rec = db.get_latest_decision_for_date(conn, for_date)
+
+        summary = None
+        try:
+            session = client.make_session(HUB_SERIAL, API_KEY)
+            base_url = client.discover_hub_url(session)
+            summary = _summarise_minutes(
+                client.fetch_day_minutes(session, base_url, serial, today), for_date
+            )
+        except Exception:
+            logger.warning("charge_window_summary: minute data request failed", exc_info=True)
+
+        if summary is not None:
+            stats, rows = summary
+            db.insert_charge_window_minutes(conn, rows)
+        else:
+            midnight = datetime(today.year, today.month, today.day)
+            stats = db.get_live_window_stats(
+                conn,
+                midnight + timedelta(hours=OFFPEAK_START_HOUR),
+                midnight + timedelta(hours=OFFPEAK_END_HOUR),
+            ) or {}
+            stats["source"] = "live" if stats else None
+
+        stats.update({
+            "decision": decision_rec["decision"] if decision_rec else None,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "charge_from_grid": _read_charge_from_grid(serial),
+        })
+        db.upsert_charge_window(conn, for_date, stats)
+        conn.close()
+        logger.info("charge_window_summary: %s", stats)
+        return stats
+    except Exception:
+        logger.exception("charge_window_summary failed")
+        return {"error": "Unexpected error — check logs"}
 
 
 def build_scheduler() -> BackgroundScheduler:
@@ -462,6 +597,12 @@ def build_scheduler() -> BackgroundScheduler:
         trigger=CronTrigger(hour=0, minute=10),
         id="prewarm_plan",
         misfire_grace_time=600,
+    )
+    scheduler.add_job(
+        func=job_charge_window_summary,
+        trigger=CronTrigger(hour=OFFPEAK_END_HOUR, minute=5),
+        id="charge_window_summary",
+        misfire_grace_time=3600,
     )
     global _scheduler
     _scheduler = scheduler

@@ -99,6 +99,15 @@ def api_decisions():
     return jsonify(data)
 
 
+@app.route("/api/charge-windows")
+def api_charge_windows():
+    limit = int(request.args.get("limit", 60))
+    conn = db.get_conn()
+    data = db.get_charge_windows(conn, limit=limit)
+    conn.close()
+    return jsonify(data)
+
+
 @app.route("/api/status")
 def api_status():
     now = time.time()

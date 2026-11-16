@@ -77,6 +77,47 @@ def init_schema(conn: sqlite3.Connection) -> None:
             status INTEGER,
             PRIMARY KEY (ts, serial)
         );
+        -- One row per night: the 00:10 pre-warm plan's predictions plus what
+        -- actually happened in the off-peak window (filled just after it ends).
+        -- Used to check the pre-warm thermal model and the charge decision.
+        CREATE TABLE IF NOT EXISTS charge_windows (
+            for_date             TEXT PRIMARY KEY,
+            decision             TEXT,
+            plan_soc_pct         REAL,
+            plan_batt_temp_c     REAL,
+            plan_temp_source     TEXT,
+            plan_lead_min        REAL,
+            plan_e_req_kwh       REAL,
+            plan_window_kwh      REAL,
+            plan_shortfall_kwh   REAL,
+            plan_temp_at_start_c REAL,
+            recorded_at          TEXT,
+            source               TEXT,     -- 'minute' (hub cgi-jday) or 'live' (live_samples)
+            charge_from_grid     INTEGER,  -- cloud flag read back after the window
+            start_soc_pct        REAL,
+            end_soc_pct          REAL,
+            max_soc_pct          REAL,
+            start_batt_temp_c    REAL,
+            end_batt_temp_c      REAL,
+            max_batt_temp_c      REAL,
+            pre_window_kwh       REAL,     -- charged in the lead-up (pre-warm)
+            window_kwh           REAL,     -- charged inside the off-peak window
+            grid_import_kwh      REAL,     -- whole-site import inside the window
+            minutes_to_full_rate INTEGER,  -- window minutes until charge >= 90% of max
+            minute_count         INTEGER
+        );
+        -- Minute trace of each night's lead-up + off-peak window, kept because
+        -- the hub's own minute history can vanish.
+        CREATE TABLE IF NOT EXISTS charge_window_minutes (
+            for_date    TEXT NOT NULL,
+            minute      TEXT NOT NULL,     -- local HH:MM
+            batt_temp_c REAL,
+            ambt_c      REAL,
+            charge_w    REAL,
+            imp_w       REAL,
+            soc_pct     REAL,
+            PRIMARY KEY (for_date, minute)
+        );
         -- Active alerts, so each problem is emailed once on onset and once on recovery.
         CREATE TABLE IF NOT EXISTS alert_state (
             name   TEXT PRIMARY KEY,
@@ -119,6 +160,70 @@ def insert_live_sample(conn: sqlite3.Connection, ts: str, serial: str, s: dict) 
 def prune_live_samples(conn: sqlite3.Connection, keep_days: int = 400) -> None:
     conn.execute("DELETE FROM live_samples WHERE ts < datetime('now', ?)", (f"-{keep_days} days",))
     conn.commit()
+
+
+_CHARGE_WINDOW_COLS = {
+    "decision", "plan_soc_pct", "plan_batt_temp_c", "plan_temp_source", "plan_lead_min",
+    "plan_e_req_kwh", "plan_window_kwh", "plan_shortfall_kwh", "plan_temp_at_start_c",
+    "recorded_at", "source", "charge_from_grid", "start_soc_pct", "end_soc_pct",
+    "max_soc_pct", "start_batt_temp_c", "end_batt_temp_c", "max_batt_temp_c",
+    "pre_window_kwh", "window_kwh", "grid_import_kwh", "minutes_to_full_rate", "minute_count",
+}
+
+
+def upsert_charge_window(conn: sqlite3.Connection, for_date: str, fields: dict) -> None:
+    """Set some columns of a night's charge_windows row, creating it if needed."""
+    bad = set(fields) - _CHARGE_WINDOW_COLS
+    if bad:
+        raise ValueError(f"unknown charge_windows columns: {sorted(bad)}")
+    conn.execute("INSERT OR IGNORE INTO charge_windows (for_date) VALUES (?)", (for_date,))
+    if fields:
+        cols = sorted(fields)
+        conn.execute(
+            f"UPDATE charge_windows SET {', '.join(c + ' = ?' for c in cols)} WHERE for_date = ?",
+            [fields[c] for c in cols] + [for_date],
+        )
+    conn.commit()
+
+
+def insert_charge_window_minutes(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    """rows: (for_date, 'HH:MM', batt_temp_c, ambt_c, charge_w, imp_w, soc_pct)."""
+    conn.executemany(
+        "INSERT OR REPLACE INTO charge_window_minutes VALUES (?,?,?,?,?,?,?)", rows
+    )
+    conn.commit()
+
+
+def get_live_window_stats(conn: sqlite3.Connection, start: datetime, end: datetime) -> dict | None:
+    """SOC and energy over [start, end) local time from live_samples (fallback
+    when the hub has no minute history). Energies assume evenly spaced samples."""
+    rows = conn.execute(
+        """
+        SELECT soc, batt_w, grd_w FROM live_samples
+        WHERE  datetime(ts, 'localtime') >= ? AND datetime(ts, 'localtime') < ?
+        ORDER  BY ts
+        """,
+        (start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S")),
+    ).fetchall()
+    if not rows:
+        return None
+    hours = (end - start).total_seconds() / 3600
+    n = len(rows)
+    return {
+        "start_soc_pct": rows[0]["soc"],
+        "end_soc_pct": rows[-1]["soc"],
+        "max_soc_pct": max(r["soc"] for r in rows),
+        "window_kwh": round(sum(max(r["batt_w"] or 0, 0) for r in rows) / n * hours / 1000, 3),
+        "grid_import_kwh": round(sum(max(r["grd_w"] or 0, 0) for r in rows) / n * hours / 1000, 3),
+        "minute_count": None,
+    }
+
+
+def get_charge_windows(conn: sqlite3.Connection, limit: int = 60) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM charge_windows ORDER BY for_date DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_alert(conn: sqlite3.Connection, name: str) -> sqlite3.Row | None:

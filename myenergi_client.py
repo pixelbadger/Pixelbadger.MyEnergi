@@ -99,8 +99,9 @@ def get_libbi_soc(session: requests.Session, base_url: str, libbi_serial: str) -
 def get_libbi_live(session: requests.Session, base_url: str, libbi_serial: str) -> dict:
     """Instantaneous Libbi readings from live status (powers in W).
 
-    batt_w is derived from the energy balance gen + grid - load:
-    positive = charging, negative = discharging.
+    `div` on a Libbi is the battery power (positive = charging, negative =
+    discharging), despite the CT being labelled "Internal Load". House load is
+    derived from the energy balance gen + grid - battery.
     """
     r = session.get(f"{base_url}/cgi-jstatus-L", timeout=15)
     r.raise_for_status()
@@ -110,16 +111,30 @@ def get_libbi_live(session: requests.Session, base_url: str, libbi_serial: str) 
     entry = next((e for e in entries if str(e.get("sno", "")) == libbi_serial), entries[0])
     gen = float(entry.get("gen", 0) or 0)
     grd = float(entry.get("grd", 0) or 0)
-    load = float(entry.get("div", 0) or 0)
+    batt = float(entry.get("div", 0) or 0)
     return {
         "soc": float(entry["soc"]),
         "gen_w": gen,
         "grd_w": grd,
-        "load_w": load,
-        "batt_w": gen + grd - load,
+        "load_w": gen + grd - batt,
+        "batt_w": batt,
         "mode": entry.get("lmo"),
         "status": entry.get("sta"),
     }
+
+
+def fetch_day_minutes(
+    session: requests.Session, base_url: str, libbi_serial: str, day: date
+) -> list[dict]:
+    """Libbi minute records for one day (cgi-jday). Energies are J/min.
+
+    The hub omits zero-valued fields, including `hr`/`min` at 00.
+    """
+    url = f"{base_url}/cgi-jday-L{libbi_serial}-{day.year}-{day.month}-{day.day}"
+    r = session.get(url, timeout=30)
+    r.raise_for_status()
+    records = r.json().get(f"U{libbi_serial}", [])
+    return records if isinstance(records, list) else []
 
 
 def get_libbi_battery_temp(
@@ -133,11 +148,7 @@ def get_libbi_battery_temp(
     carries `batt` and works for the current day, so the last record with a
     non-null `batt` is at most a few minutes old.
     """
-    today = date.today()
-    url = f"{base_url}/cgi-jday-L{libbi_serial}-{today.year}-{today.month}-{today.day}"
-    r = session.get(url, timeout=30)
-    r.raise_for_status()
-    records = r.json().get(f"U{libbi_serial}", [])
+    records = fetch_day_minutes(session, base_url, libbi_serial, date.today())
     for rec in reversed(records):
         if rec.get("batt") is not None:
             return float(rec["batt"])
@@ -164,10 +175,7 @@ def get_libbi_last_history_time(
     stale (or missing) latest record is the symptom to watch for.
     """
     today = date.today()
-    url = f"{base_url}/cgi-jday-L{libbi_serial}-{today.year}-{today.month}-{today.day}"
-    r = session.get(url, timeout=30)
-    r.raise_for_status()
-    records = r.json().get(f"U{libbi_serial}", [])
+    records = fetch_day_minutes(session, base_url, libbi_serial, today)
     if not records:
         return None
     last = records[-1]  # zero-valued hr/min are omitted by the hub
